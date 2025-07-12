@@ -1324,6 +1324,160 @@ app.post('/api/database/operations/startup', async (req, res) => {
   }
 });
 
+// Add this route to your backend/server.js file
+// Place it after your existing database operations routes
+
+// Database privilege checker route
+app.get('/api/database/check-privileges', async (req, res) => {
+  try {
+    console.log('🔍 Checking database privileges for current user...');
+    
+    const config = dbConfigService.getConfig();
+    if (!config.isConfigured) {
+      return res.status(400).json({
+        success: false,
+        error: 'Database not configured'
+      });
+    }
+
+    const connection = realOracleService.connection;
+    if (!connection) {
+      return res.status(400).json({
+        success: false,
+        error: 'No active database connection'
+      });
+    }
+
+    let privilegeInfo = {
+      user: config.username,
+      timestamp: new Date().toISOString(),
+      environment: {},
+      privileges: {},
+      recommendations: []
+    };
+
+    // Check environment (PDB vs CDB)
+    try {
+      const envQuery = `
+        SELECT 
+          SYS_CONTEXT('USERENV', 'CON_NAME') as container_name,
+          SYS_CONTEXT('USERENV', 'CON_ID') as container_id,
+          (SELECT CDB FROM v$database) as is_cdb
+        FROM dual
+      `;
+      
+      const envResult = await connection.execute(envQuery);
+      if (envResult.rows.length > 0) {
+        const [containerName, containerId, isCdb] = envResult.rows[0];
+        privilegeInfo.environment = {
+          container_name: containerName,
+          container_id: containerId,
+          is_cdb: isCdb === 'YES',
+          is_pdb: containerId > 1
+        };
+      }
+    } catch (envError) {
+      privilegeInfo.environment.error = envError.message;
+    }
+
+    // Check system privileges
+    try {
+      const sysPrivQuery = `
+        SELECT privilege FROM user_sys_privs 
+        WHERE privilege IN (
+          'SYSDBA', 'SYSOPER', 'ALTER SYSTEM', 'ALTER DATABASE',
+          'CREATE SESSION', 'ALTER PLUGGABLE DATABASE'
+        )
+        ORDER BY privilege
+      `;
+      
+      const sysPrivResult = await connection.execute(sysPrivQuery);
+      privilegeInfo.privileges.system = sysPrivResult.rows.map(row => row[0]);
+    } catch (privError) {
+      privilegeInfo.privileges.system_error = privError.message;
+    }
+
+    // Check role privileges
+    try {
+      const roleQuery = `
+        SELECT granted_role FROM user_role_privs 
+        WHERE granted_role IN ('DBA', 'RESOURCE', 'CONNECT')
+        ORDER BY granted_role
+      `;
+      
+      const roleResult = await connection.execute(roleQuery);
+      privilegeInfo.privileges.roles = roleResult.rows.map(row => row[0]);
+    } catch (roleError) {
+      privilegeInfo.privileges.role_error = roleError.message;
+    }
+
+    // Check for SYSDBA in password file
+    try {
+      const sysdbaQuery = `
+        SELECT username FROM v$pwfile_users 
+        WHERE username = '${config.username.toUpperCase()}'
+      `;
+      
+      const sysdbaResult = await connection.execute(sysdbaQuery);
+      privilegeInfo.privileges.sysdba_in_pwfile = sysdbaResult.rows.length > 0;
+    } catch (sysdbaError) {
+      privilegeInfo.privileges.sysdba_check_error = sysdbaError.message;
+    }
+
+    // Generate recommendations
+    const hasSystemPrivs = privilegeInfo.privileges.system || [];
+    const hasRoles = privilegeInfo.privileges.roles || [];
+    
+    if (!privilegeInfo.privileges.sysdba_in_pwfile && !hasSystemPrivs.includes('SYSDBA') && !hasSystemPrivs.includes('SYSOPER')) {
+      privilegeInfo.recommendations.push({
+        type: 'CRITICAL',
+        message: `User '${config.username}' needs SYSDBA or SYSOPER privileges for database shutdown`,
+        command: `GRANT SYSDBA TO ${config.username};`,
+        explanation: 'Required for SHUTDOWN IMMEDIATE and STARTUP operations'
+      });
+    }
+
+    if (privilegeInfo.environment.is_pdb && !hasSystemPrivs.includes('ALTER PLUGGABLE DATABASE')) {
+      privilegeInfo.recommendations.push({
+        type: 'INFO',
+        message: 'For PDB-specific operations, consider granting ALTER PLUGGABLE DATABASE',
+        command: `GRANT ALTER PLUGGABLE DATABASE TO ${config.username};`,
+        explanation: 'Allows opening/closing pluggable databases'
+      });
+    }
+
+    if (hasSystemPrivs.length === 0 && hasRoles.length === 0) {
+      privilegeInfo.recommendations.push({
+        type: 'WARNING',
+        message: 'User has minimal privileges - consider granting RESOURCE role for basic operations',
+        command: `GRANT RESOURCE TO ${config.username};`,
+        explanation: 'Provides basic database object creation privileges'
+      });
+    }
+
+    if (privilegeInfo.privileges.sysdba_in_pwfile) {
+      privilegeInfo.recommendations.push({
+        type: 'SUCCESS',
+        message: `User '${config.username}' has SYSDBA privileges in password file`,
+        explanation: 'Should be able to perform shutdown/startup operations'
+      });
+    }
+
+    console.log('✅ Privilege check completed');
+    res.json({ 
+      success: true, 
+      data: privilegeInfo
+    });
+
+  } catch (error) {
+    console.error('❌ Privilege check error:', error);
+    res.status(500).json({ 
+      success: false,
+      error: error.message 
+    });
+  }
+});
+
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error('💥 Unhandled error:', err);
