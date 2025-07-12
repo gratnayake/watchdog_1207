@@ -12,7 +12,14 @@ import {
   Typography,
   Alert,
   Tooltip,
-  Badge
+  Badge,
+  Modal,
+  Input,
+  InputNumber,
+  message,
+  Dropdown,
+  Popconfirm,
+  Divider
 } from 'antd';
 import { 
   CloudOutlined, 
@@ -20,12 +27,24 @@ import {
   CheckCircleOutlined,
   ExclamationCircleOutlined,
   ClockCircleOutlined,
-  DatabaseOutlined
+  DatabaseOutlined,
+  PlayCircleOutlined,
+  DeleteOutlined,
+  FileTextOutlined,
+  CodeOutlined,
+  SettingOutlined,
+  InfoCircleOutlined,
+  ScissorOutlined,
+  ThunderboltOutlined,
+  MoreOutlined,
+  EyeOutlined,
+  ExpandOutlined
 } from '@ant-design/icons';
 import { kubernetesAPI } from '../../services/api';
 
 const { Title, Text } = Typography;
 const { Option } = Select;
+const { TextArea } = Input;
 
 const KubernetesMonitor = () => {
   const [pods, setPods] = useState([]);
@@ -35,6 +54,13 @@ const KubernetesMonitor = () => {
   const [loading, setLoading] = useState(false);
   const [selectedNamespace, setSelectedNamespace] = useState('all');
   const [autoRefresh, setAutoRefresh] = useState(true);
+
+  // Pod Actions State
+  const [logsModal, setLogsModal] = useState({ visible: false, pod: null, logs: '', loading: false });
+  const [execModal, setExecModal] = useState({ visible: false, pod: null, command: '', containers: [] });
+  const [scaleModal, setScaleModal] = useState({ visible: false, deployment: null, replicas: 1 });
+  const [describeModal, setDescribeModal] = useState({ visible: false, pod: null, description: '', loading: false });
+  const [actionLoading, setActionLoading] = useState('');
 
   useEffect(() => {
     loadInitialData();
@@ -126,6 +152,141 @@ const KubernetesMonitor = () => {
     }
   };
 
+  // POD ACTIONS
+  const handleRestartPod = async (pod) => {
+    setActionLoading(`restart-${pod.name}`);
+    try {
+      const result = await kubernetesAPI.restartPod(pod.namespace, pod.name);
+      if (result.success) {
+        message.success(`Pod ${pod.name} restart initiated successfully!`);
+        setTimeout(() => loadPods(), 2000); // Refresh after 2 seconds
+      } else {
+        message.error(`Failed to restart pod: ${result.error}`);
+      }
+    } catch (error) {
+      message.error(`Failed to restart pod: ${error.message}`);
+    } finally {
+      setActionLoading('');
+    }
+  };
+
+  const handleDeletePod = async (pod, force = false) => {
+    setActionLoading(`delete-${pod.name}`);
+    try {
+      const result = await kubernetesAPI.deletePod(pod.namespace, pod.name, force);
+      if (result.success) {
+        message.success(`Pod ${pod.name} deleted successfully!`);
+        setTimeout(() => loadPods(), 1000); // Refresh after 1 second
+      } else {
+        message.error(`Failed to delete pod: ${result.error}`);
+      }
+    } catch (error) {
+      message.error(`Failed to delete pod: ${error.message}`);
+    } finally {
+      setActionLoading('');
+    }
+  };
+
+  const handleViewLogs = async (pod) => {
+    setLogsModal({ visible: true, pod, logs: '', loading: true });
+    
+    try {
+      const result = await kubernetesAPI.getPodLogs(pod.namespace, pod.name, { lines: 500 });
+      if (result.success) {
+        setLogsModal(prev => ({ ...prev, logs: result.logs, loading: false }));
+      } else {
+        setLogsModal(prev => ({ ...prev, logs: `Error: ${result.error}`, loading: false }));
+      }
+    } catch (error) {
+      setLogsModal(prev => ({ ...prev, logs: `Error: ${error.message}`, loading: false }));
+    }
+  };
+
+  const handleExecPod = async (pod) => {
+    try {
+      const result = await kubernetesAPI.getPodContainers(pod.namespace, pod.name);
+      if (result.success) {
+        setExecModal({ 
+          visible: true, 
+          pod, 
+          command: '/bin/bash', 
+          containers: result.containers 
+        });
+      } else {
+        message.error('Failed to get pod containers');
+      }
+    } catch (error) {
+      message.error(`Failed to get pod containers: ${error.message}`);
+    }
+  };
+
+  const handleDescribePod = async (pod) => {
+    setDescribeModal({ visible: true, pod, description: '', loading: true });
+    
+    try {
+      const result = await kubernetesAPI.describePod(pod.namespace, pod.name);
+      if (result.success) {
+        setDescribeModal(prev => ({ ...prev, description: result.description, loading: false }));
+      } else {
+        setDescribeModal(prev => ({ ...prev, description: `Error: ${result.error}`, loading: false }));
+      }
+    } catch (error) {
+      setDescribeModal(prev => ({ ...prev, description: `Error: ${error.message}`, loading: false }));
+    }
+  };
+
+  const handleScaleDeployment = async (pod) => {
+    try {
+      const result = await kubernetesAPI.getDeploymentInfo(pod.namespace, pod.name);
+      if (result.success) {
+        setScaleModal({ 
+          visible: true, 
+          deployment: result.deployment, 
+          replicas: result.deployment.replicas 
+        });
+      } else {
+        message.error('No deployment found for this pod');
+      }
+    } catch (error) {
+      message.error(`Failed to get deployment info: ${error.message}`);
+    }
+  };
+
+  const executeScale = async () => {
+    try {
+      const result = await kubernetesAPI.scaleDeployment(
+        scaleModal.deployment.namespace, 
+        scaleModal.deployment.name, 
+        scaleModal.replicas
+      );
+      if (result.success) {
+        message.success(`Deployment scaled to ${scaleModal.replicas} replicas`);
+        setScaleModal({ visible: false, deployment: null, replicas: 1 });
+        setTimeout(() => loadPods(), 2000);
+      } else {
+        message.error(`Failed to scale deployment: ${result.error}`);
+      }
+    } catch (error) {
+      message.error(`Failed to scale deployment: ${error.message}`);
+    }
+  };
+
+  const executeExec = async () => {
+    try {
+      const result = await kubernetesAPI.execInPod(execModal.pod.namespace, execModal.pod.name, {
+        command: execModal.command
+      });
+      if (result.success) {
+        message.success(`Exec command ready: ${result.execCommand}`);
+        message.info('Copy and run this command in your terminal');
+      } else {
+        message.error(`Failed to create exec session: ${result.error}`);
+      }
+    } catch (error) {
+      message.error(`Failed to create exec session: ${error.message}`);
+    }
+  };
+
   const getStatusColor = (status) => {
     switch (status.toLowerCase()) {
       case 'running': return 'green';
@@ -136,17 +297,70 @@ const KubernetesMonitor = () => {
     }
   };
 
+  // Pod Actions Menu
+  const getPodActionsMenu = (pod) => {
+    const items = [
+      {
+        key: 'logs',
+        label: 'View Logs',
+        icon: <FileTextOutlined />,
+        onClick: () => handleViewLogs(pod)
+      },
+      {
+        key: 'describe',
+        label: 'Describe Pod',
+        icon: <InfoCircleOutlined />,
+        onClick: () => handleDescribePod(pod)
+      },
+      {
+        key: 'exec',
+        label: 'Exec into Pod',
+        icon: <CodeOutlined />,
+        onClick: () => handleExecPod(pod)
+      },
+      {
+        type: 'divider'
+      },
+      {
+        key: 'scale',
+        label: 'Scale Deployment',
+        icon: <ExpandOutlined />,
+        onClick: () => handleScaleDeployment(pod)
+      },
+      {
+        key: 'restart',
+        label: 'Restart Pod',
+        icon: <ReloadOutlined />,
+        onClick: () => handleRestartPod(pod)
+      },
+      {
+        type: 'divider'
+      },
+      {
+        key: 'delete',
+        label: 'Delete Pod',
+        icon: <DeleteOutlined />,
+        danger: true,
+        onClick: () => handleDeletePod(pod)
+      }
+    ];
+
+    return { items };
+  };
+
   const podColumns = [
     {
-      title: 'Pod Name',
-      dataIndex: 'name',
-      key: 'name',
-      render: (text, record) => (
+      title: 'Pod Details',
+      key: 'details',
+      render: (_, record) => (
         <Space direction="vertical" size="small">
-          <Text strong>{text}</Text>
-          <Text type="secondary" style={{ fontSize: '12px' }}>
-            {record.namespace}
-          </Text>
+          <div>
+            <Text strong>{record.name}</Text>
+            <br />
+            <Text type="secondary" style={{ fontSize: '12px' }}>
+              {record.namespace}
+            </Text>
+          </div>
         </Space>
       ),
     },
@@ -193,6 +407,58 @@ const KubernetesMonitor = () => {
         <Tooltip title={`Running on ${node}`}>
           <Tag>{node}</Tag>
         </Tooltip>
+      ),
+    },
+    {
+      title: 'Actions',
+      key: 'actions',
+      width: 200,
+      render: (_, record) => (
+        <Space size="small">
+          <Tooltip title="Quick Restart">
+            <Button
+              type="primary"
+              size="small"
+              icon={<PlayCircleOutlined />}
+              loading={actionLoading === `restart-${record.name}`}
+              onClick={() => handleRestartPod(record)}
+            />
+          </Tooltip>
+          
+          <Tooltip title="View Logs">
+            <Button
+              size="small"
+              icon={<EyeOutlined />}
+              onClick={() => handleViewLogs(record)}
+            />
+          </Tooltip>
+
+          <Popconfirm
+            title="Delete Pod"
+            description="Are you sure you want to delete this pod?"
+            onConfirm={() => handleDeletePod(record)}
+            okText="Delete"
+            cancelText="Cancel"
+            okButtonProps={{ danger: true }}
+          >
+            <Tooltip title="Delete Pod">
+              <Button
+                danger
+                size="small"
+                icon={<DeleteOutlined />}
+                loading={actionLoading === `delete-${record.name}`}
+              />
+            </Tooltip>
+          </Popconfirm>
+
+          <Dropdown 
+            menu={getPodActionsMenu(record)}
+            trigger={['click']}
+            placement="bottomRight"
+          >
+            <Button size="small" icon={<MoreOutlined />} />
+          </Dropdown>
+        </Space>
       ),
     },
   ];
@@ -254,51 +520,43 @@ const KubernetesMonitor = () => {
   if (!clusterInfo?.configured) {
     return (
       <Alert
-      message="Kubernetes Not Configured"
-      description="Configure your kubeconfig file path to enable Kubernetes monitoring."
-      type="warning"
-      showIcon
-      action={
-        <Button type="primary" onClick={() => window.location.hash = '#/kubernetes-config'}>
-          Configure Kubernetes
-        </Button>
-      }
-    />
+        message="Kubernetes Not Configured"
+        description="Configure your kubeconfig file path to enable Kubernetes monitoring."
+        type="warning"
+        showIcon
+      />
     );
   }
 
   return (
     <div>
-      {/* Cluster Overview */}
+      {/* Control Panel */}
       <Card style={{ marginBottom: 24 }}>
         <Row gutter={[16, 16]} align="middle">
-          <Col xs={24} sm={12} md={6}>
-            <Space direction="vertical" size="small">
-              <Title level={3} style={{ margin: 0 }}>
-                <CloudOutlined style={{ marginRight: 8 }} />
-                Kubernetes Cluster
-              </Title>
-              <Text type="secondary">Live cluster monitoring</Text>
+          <Col xs={24} md={8}>
+            <Space>
+              <Title level={4} style={{ margin: 0 }}>Kubernetes Cluster</Title>
+              <Tag color="blue">Connected</Tag>
             </Space>
           </Col>
-          
-          <Col xs={24} sm={12} md={6}>
-            <Select
-              style={{ width: '100%' }}
-              value={selectedNamespace}
-              onChange={(value) => {
-                setSelectedNamespace(value);
-                loadPods();
-              }}
-            >
-              <Option value="all">All Namespaces</Option>
-              {namespaces.map(ns => (
-                <Option key={ns.name} value={ns.name}>{ns.name}</Option>
-              ))}
-            </Select>
+
+          <Col xs={24} md={8}>
+            <Space>
+              <Text>Namespace:</Text>
+              <Select
+                value={selectedNamespace}
+                onChange={setSelectedNamespace}
+                style={{ width: 200 }}
+              >
+                <Option value="all">All Namespaces</Option>
+                {namespaces.map(ns => (
+                  <Option key={ns.name} value={ns.name}>{ns.name}</Option>
+                ))}
+              </Select>
+            </Space>
           </Col>
 
-          <Col xs={24} md={12}>
+          <Col xs={24} md={8}>
             <Space>
               <Button 
                 icon={<ReloadOutlined />} 
@@ -307,7 +565,7 @@ const KubernetesMonitor = () => {
               >
                 Refresh
               </Button>
-              <Button 
+              <Button
                 type={autoRefresh ? 'primary' : 'default'}
                 onClick={() => setAutoRefresh(!autoRefresh)}
               >
@@ -362,19 +620,36 @@ const KubernetesMonitor = () => {
       </Row>
 
       {/* Pods Table */}
-      <Card title="Pods" style={{ marginBottom: 24 }}>
+      <Card title={
+        <Space>
+          <CloudOutlined />
+          <span>Pods</span>
+          <Tag color="blue">{pods.length} pods</Tag>
+        </Space>
+      } style={{ marginBottom: 24 }}>
         <Table
           columns={podColumns}
           dataSource={pods}
           loading={loading}
-          pagination={{ pageSize: 10 }}
+          pagination={{ 
+            pageSize: 10,
+            showSizeChanger: true,
+            showQuickJumper: true,
+            showTotal: (total, range) => `${range[0]}-${range[1]} of ${total} pods`
+          }}
           rowKey="name"
           size="middle"
         />
       </Card>
 
       {/* Nodes Table */}
-      <Card title="Nodes">
+      <Card title={
+        <Space>
+          <DatabaseOutlined />
+          <span>Nodes</span>
+          <Tag color="green">{nodes.length} nodes</Tag>
+        </Space>
+      }>
         <Table
           columns={nodeColumns}
           dataSource={nodes}
@@ -383,6 +658,159 @@ const KubernetesMonitor = () => {
           size="middle"
         />
       </Card>
+
+      {/* Pod Logs Modal */}
+      <Modal
+        title={
+          <Space>
+            <FileTextOutlined />
+            Pod Logs: {logsModal.pod?.name}
+            <Tag color="blue">{logsModal.pod?.namespace}</Tag>
+          </Space>
+        }
+        open={logsModal.visible}
+        onCancel={() => setLogsModal({ visible: false, pod: null, logs: '', loading: false })}
+        footer={[
+          <Button key="refresh" onClick={() => handleViewLogs(logsModal.pod)}>
+            Refresh Logs
+          </Button>,
+          <Button key="close" type="primary" onClick={() => setLogsModal({ visible: false, pod: null, logs: '', loading: false })}>
+            Close
+          </Button>
+        ]}
+        width={900}
+      >
+        <div style={{
+          background: '#000',
+          color: '#00ff00',
+          padding: '16px',
+          borderRadius: '6px',
+          fontFamily: 'Consolas, Monaco, "Courier New", monospace',
+          fontSize: '13px',
+          maxHeight: '500px',
+          overflow: 'auto',
+          whiteSpace: 'pre-wrap'
+        }}>
+          {logsModal.loading ? (
+            <div style={{ textAlign: 'center', padding: '40px', color: '#00ff00' }}>
+              ⏳ Loading logs...
+            </div>
+          ) : (
+            logsModal.logs || 'No logs available'
+          )}
+        </div>
+      </Modal>
+
+      {/* Pod Describe Modal */}
+      <Modal
+        title={
+          <Space>
+            <InfoCircleOutlined />
+            Pod Description: {describeModal.pod?.name}
+          </Space>
+        }
+        open={describeModal.visible}
+        onCancel={() => setDescribeModal({ visible: false, pod: null, description: '', loading: false })}
+        footer={[
+          <Button key="close" type="primary" onClick={() => setDescribeModal({ visible: false, pod: null, description: '', loading: false })}>
+            Close
+          </Button>
+        ]}
+        width={900}
+      >
+        <TextArea
+          value={describeModal.description}
+          readOnly
+          rows={20}
+          style={{ 
+            fontFamily: 'Consolas, Monaco, "Courier New", monospace',
+            fontSize: '12px'
+          }}
+          placeholder={describeModal.loading ? 'Loading pod description...' : 'No description available'}
+        />
+      </Modal>
+
+      {/* Exec Modal */}
+      <Modal
+        title={
+          <Space>
+            <CodeOutlined />
+            Exec into Pod: {execModal.pod?.name}
+          </Space>
+        }
+        open={execModal.visible}
+        onCancel={() => setExecModal({ visible: false, pod: null, command: '', containers: [] })}
+        onOk={executeExec}
+        okText="Generate Command"
+      >
+        <Space direction="vertical" style={{ width: '100%' }}>
+          <div>
+            <Text strong>Command to execute:</Text>
+            <Input
+              value={execModal.command}
+              onChange={(e) => setExecModal(prev => ({ ...prev, command: e.target.value }))}
+              placeholder="/bin/bash"
+            />
+          </div>
+          
+          {execModal.containers.length > 1 && (
+            <div>
+              <Text strong>Available containers:</Text>
+              <div>
+                {execModal.containers.map(container => (
+                  <Tag key={container} color="blue">{container}</Tag>
+                ))}
+              </div>
+            </div>
+          )}
+          
+          <Alert
+            message="Exec Command Generation"
+            description="This will generate a kubectl exec command that you can run in your terminal."
+            type="info"
+            showIcon
+          />
+        </Space>
+      </Modal>
+
+      {/* Scale Deployment Modal */}
+      <Modal
+        title={
+          <Space>
+            <ExpandOutlined />
+            Scale Deployment: {scaleModal.deployment?.name}
+          </Space>
+        }
+        open={scaleModal.visible}
+        onCancel={() => setScaleModal({ visible: false, deployment: null, replicas: 1 })}
+        onOk={executeScale}
+        okText="Scale"
+      >
+        <Space direction="vertical" style={{ width: '100%' }}>
+          <div>
+            <Text strong>Current Replicas: </Text>
+            <Tag color="blue">{scaleModal.deployment?.replicas}</Tag>
+          </div>
+          
+          <div>
+            <Text strong>New Replica Count:</Text>
+            <InputNumber
+              min={0}
+              max={50}
+              value={scaleModal.replicas}
+              onChange={(value) => setScaleModal(prev => ({ ...prev, replicas: value }))}
+              style={{ width: '100%', marginTop: 8 }}
+            />
+          </div>
+          
+          <Alert
+            message="Scaling Deployment"
+            description={`This will scale the deployment to ${scaleModal.replicas} replicas. Pods will be created or destroyed as needed.`}
+            type="warning"
+            showIcon
+          />
+        </Space>
+      </Modal>
     </div>
   );
 };

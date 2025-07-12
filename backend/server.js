@@ -12,6 +12,8 @@ const urlMonitoringService = require('./services/urlMonitoringService');
 const kubernetesConfigService = require('./services/kubernetesConfigService');
 const thresholdService = require('./services/thresholdService');
 const databaseOperationsService = require('./services/databaseOperationsService');
+const podActionsService = require('./services/podActionsService');
+
 const { exec } = require('child_process');
 const util = require('util');
 const fs = require('fs');
@@ -1474,6 +1476,265 @@ app.get('/api/database/check-privileges', async (req, res) => {
     res.status(500).json({ 
       success: false,
       error: error.message 
+    });
+  }
+});
+
+// Restart a pod
+app.post('/api/kubernetes/pods/:namespace/:podName/restart', async (req, res) => {
+  try {
+    const { namespace, podName } = req.params;
+    console.log(`🔄 Pod restart requested: ${namespace}/${podName}`);
+    
+    const result = await podActionsService.restartPod(namespace, podName);
+    
+    if (result.success) {
+      res.json({
+        success: true,
+        message: result.message,
+        output: result.output,
+        timestamp: result.timestamp
+      });
+    } else {
+      res.status(400).json({
+        success: false,
+        error: result.message,
+        timestamp: result.timestamp
+      });
+    }
+  } catch (error) {
+    console.error('❌ Pod restart error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Delete a pod
+app.delete('/api/kubernetes/pods/:namespace/:podName', async (req, res) => {
+  try {
+    const { namespace, podName } = req.params;
+    const { force } = req.query;
+    console.log(`🗑️ Pod deletion requested: ${namespace}/${podName}, force: ${force}`);
+    
+    const result = await podActionsService.deletePod(namespace, podName, force === 'true');
+    
+    if (result.success) {
+      res.json({
+        success: true,
+        message: result.message,
+        output: result.output,
+        timestamp: result.timestamp
+      });
+    } else {
+      res.status(400).json({
+        success: false,
+        error: result.message,
+        timestamp: result.timestamp
+      });
+    }
+  } catch (error) {
+    console.error('❌ Pod deletion error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Get pod logs
+app.get('/api/kubernetes/pods/:namespace/:podName/logs', async (req, res) => {
+  try {
+    const { namespace, podName } = req.params;
+    const { container, lines = 100, follow } = req.query;
+    console.log(`📝 Pod logs requested: ${namespace}/${podName}`);
+    
+    const result = await podActionsService.getPodLogs(
+      namespace, 
+      podName, 
+      container, 
+      parseInt(lines), 
+      follow === 'true'
+    );
+    
+    if (result.success) {
+      res.json({
+        success: true,
+        logs: result.logs,
+        timestamp: result.timestamp
+      });
+    } else {
+      res.status(400).json({
+        success: false,
+        error: result.error,
+        logs: result.logs,
+        timestamp: result.timestamp
+      });
+    }
+  } catch (error) {
+    console.error('❌ Pod logs error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Execute command in pod
+app.post('/api/kubernetes/pods/:namespace/:podName/exec', async (req, res) => {
+  try {
+    const { namespace, podName } = req.params;
+    const { container, command = '/bin/bash' } = req.body;
+    console.log(`⚡ Pod exec requested: ${namespace}/${podName}`);
+    
+    const result = await podActionsService.execInPod(namespace, podName, container, command);
+    
+    if (result.success) {
+      res.json({
+        success: true,
+        message: result.message,
+        execCommand: result.execCommand,
+        timestamp: result.timestamp
+      });
+    } else {
+      res.status(400).json({
+        success: false,
+        error: result.message,
+        timestamp: result.timestamp
+      });
+    }
+  } catch (error) {
+    console.error('❌ Pod exec error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Scale deployment
+app.post('/api/kubernetes/deployments/:namespace/:deploymentName/scale', async (req, res) => {
+  try {
+    const { namespace, deploymentName } = req.params;
+    const { replicas } = req.body;
+    console.log(`📏 Deployment scale requested: ${namespace}/${deploymentName} to ${replicas}`);
+    
+    if (!replicas || replicas < 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid replica count'
+      });
+    }
+    
+    const result = await podActionsService.scaleDeployment(namespace, deploymentName, replicas);
+    
+    if (result.success) {
+      res.json({
+        success: true,
+        message: result.message,
+        output: result.output,
+        timestamp: result.timestamp
+      });
+    } else {
+      res.status(400).json({
+        success: false,
+        error: result.message,
+        timestamp: result.timestamp
+      });
+    }
+  } catch (error) {
+    console.error('❌ Deployment scale error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Describe pod
+app.get('/api/kubernetes/pods/:namespace/:podName/describe', async (req, res) => {
+  try {
+    const { namespace, podName } = req.params;
+    console.log(`📋 Pod describe requested: ${namespace}/${podName}`);
+    
+    const result = await podActionsService.describePod(namespace, podName);
+    
+    if (result.success) {
+      res.json({
+        success: true,
+        description: result.description,
+        timestamp: result.timestamp
+      });
+    } else {
+      res.status(400).json({
+        success: false,
+        error: result.error,
+        description: result.description,
+        timestamp: result.timestamp
+      });
+    }
+  } catch (error) {
+    console.error('❌ Pod describe error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Get pod containers
+app.get('/api/kubernetes/pods/:namespace/:podName/containers', async (req, res) => {
+  try {
+    const { namespace, podName } = req.params;
+    console.log(`📦 Pod containers requested: ${namespace}/${podName}`);
+    
+    const result = await podActionsService.getPodContainers(namespace, podName);
+    
+    if (result.success) {
+      res.json({
+        success: true,
+        containers: result.containers
+      });
+    } else {
+      res.status(400).json({
+        success: false,
+        error: result.message
+      });
+    }
+  } catch (error) {
+    console.error('❌ Pod containers error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Get deployment info for pod
+app.get('/api/kubernetes/pods/:namespace/:podName/deployment', async (req, res) => {
+  try {
+    const { namespace, podName } = req.params;
+    console.log(`🚀 Pod deployment info requested: ${namespace}/${podName}`);
+    
+    const result = await podActionsService.getDeploymentInfo(namespace, podName);
+    
+    if (result.success) {
+      res.json({
+        success: true,
+        deployment: result.deployment
+      });
+    } else {
+      res.status(404).json({
+        success: false,
+        error: result.message
+      });
+    }
+  } catch (error) {
+    console.error('❌ Pod deployment info error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
     });
   }
 });

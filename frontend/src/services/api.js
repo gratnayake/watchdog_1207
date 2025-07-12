@@ -289,6 +289,60 @@ export const kubernetesAPI = {
     const response = await api.post('/api/kubernetes/config/test', configData);
     return response.data;
   },
+
+restartPod: async (namespace, podName) => {
+    const response = await api.post(`/api/kubernetes/pods/${namespace}/${podName}/restart`);
+    return response.data;
+  },
+
+  deletePod: async (namespace, podName, force = false) => {
+    const response = await api.delete(`/api/kubernetes/pods/${namespace}/${podName}?force=${force}`);
+    return response.data;
+  },
+
+  getPodLogs: async (namespace, podName, options = {}) => {
+    const { container, lines = 100, follow = false } = options;
+    const params = new URLSearchParams();
+    
+    if (container) params.append('container', container);
+    params.append('lines', lines.toString());
+    params.append('follow', follow.toString());
+    
+    const response = await api.get(`/api/kubernetes/pods/${namespace}/${podName}/logs?${params}`);
+    return response.data;
+  },
+
+  execInPod: async (namespace, podName, options = {}) => {
+    const { container, command = '/bin/bash' } = options;
+    const response = await api.post(`/api/kubernetes/pods/${namespace}/${podName}/exec`, {
+      container,
+      command
+    });
+    return response.data;
+  },
+
+  scaleDeployment: async (namespace, deploymentName, replicas) => {
+    const response = await api.post(`/api/kubernetes/deployments/${namespace}/${deploymentName}/scale`, {
+      replicas
+    });
+    return response.data;
+  },
+
+  describePod: async (namespace, podName) => {
+    const response = await api.get(`/api/kubernetes/pods/${namespace}/${podName}/describe`);
+    return response.data;
+  },
+
+  getPodContainers: async (namespace, podName) => {
+    const response = await api.get(`/api/kubernetes/pods/${namespace}/${podName}/containers`);
+    return response.data;
+  },
+
+  getDeploymentInfo: async (namespace, podName) => {
+    const response = await api.get(`/api/kubernetes/pods/${namespace}/${podName}/deployment`);
+    return response.data;
+  }
+
 };
 
 export const thresholdAPI = {
