@@ -1036,6 +1036,68 @@ app.post('/api/kubernetes/config/test', async (req, res) => {
   }
 });
 
+app.get('/api/kubernetes/env-status', async (req, res) => {
+  try {
+    const config = kubernetesConfigService.getConfig();
+    const envStatus = {
+      kubeconfigPath: config.kubeconfigPath,
+      kubeconfigExists: config.kubeconfigPath ? require('fs').existsSync(config.kubeconfigPath) : false,
+      kubeconfigEnvSet: !!process.env.KUBECONFIG,
+      kubeconfigEnvValue: process.env.KUBECONFIG,
+      isConfigured: config.isConfigured,
+      serviceConfigured: kubernetesService.isConfigured,
+      lastError: kubernetesService.lastError
+    };
+
+    console.log('📊 Kubernetes environment status:', envStatus);
+    
+    res.json({
+      success: true,
+      envStatus: envStatus
+    });
+  } catch (error) {
+    console.error('❌ Kubernetes env status error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+app.post('/api/kubernetes/refresh-config', async (req, res) => {
+  try {
+    console.log('🔄 Refreshing Kubernetes configuration...');
+    
+    // Refresh the Kubernetes service configuration
+    kubernetesService.refreshConfiguration();
+    
+    // Test the new configuration
+    const testResult = await kubernetesService.testConnection();
+    
+    if (testResult.success) {
+      console.log('✅ Kubernetes configuration refreshed successfully');
+      res.json({
+        success: true,
+        message: 'Kubernetes configuration refreshed successfully',
+        testResult: testResult
+      });
+    } else {
+      console.log('❌ Kubernetes configuration refresh failed');
+      res.status(400).json({
+        success: false,
+        error: 'Configuration refresh failed: ' + testResult.error,
+        testResult: testResult
+      });
+    }
+  } catch (error) {
+    console.error('❌ Kubernetes refresh error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 // THRESHOLD ROUTES
 app.get('/api/thresholds/db-size', (req, res) => {
   try {

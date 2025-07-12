@@ -1,291 +1,212 @@
+// backend/services/kubernetesService.js - Fixed with proper environment setup
+
 const k8s = require('@kubernetes/client-node');
 const kubernetesConfigService = require('./kubernetesConfigService');
+const fs = require('fs');
 
 class KubernetesService {
   constructor() {
     this.kc = new k8s.KubeConfig();
     this.k8sApi = null;
     this.isConfigured = false;
-    this.setupKubernetesClient();
+    this.lastError = null;
+    this.initializeKubernetesClient();
   }
 
-  setupKubernetesClient() {
+  initializeKubernetesClient() {
     try {
       const config = kubernetesConfigService.getConfig();
       
       if (!config.isConfigured || !config.kubeconfigPath) {
-        console.log('⚠️ Kubernetes config path not set');
+        console.log('⚠️ Kubernetes not configured - no kubeconfig path set');
         this.isConfigured = false;
         return;
       }
 
-      console.log(`☸️ Loading Kubernetes config from: ${config.kubeconfigPath}`);
-      
-      // Check if file exists
-      const fs = require('fs');
+      // Check if kubeconfig file exists
       if (!fs.existsSync(config.kubeconfigPath)) {
-        throw new Error(`Config file not found at: ${config.kubeconfigPath}`);
+        console.log(`❌ Kubeconfig file not found: ${config.kubeconfigPath}`);
+        this.isConfigured = false;
+        this.lastError = `Kubeconfig file not found: ${config.kubeconfigPath}`;
+        return;
       }
+
+      console.log(`🔧 Setting KUBECONFIG environment variable: ${config.kubeconfigPath}`);
       
-      // Load from the specified config file
-      this.kc.loadFromFile(config.kubeconfigPath);
+      // SET THE ENVIRONMENT VARIABLE - This is what was missing!
+      process.env.KUBECONFIG = config.kubeconfigPath;
       
-      // Log context info
-      console.log('Current context:', this.kc.getCurrentContext());
-      console.log('Current cluster:', this.kc.getCurrentCluster());
-      
+      // Now load the kubeconfig
+      this.kc.loadFromDefault();
       this.k8sApi = this.kc.makeApiClient(k8s.CoreV1Api);
-      this.isConfigured = true;
       
-      console.log('☸️ Kubernetes client configured successfully');
+      this.isConfigured = true;
+      this.lastError = null;
+      
+      console.log('✅ Kubernetes client initialized with kubeconfig');
+      console.log(`📂 Using kubeconfig: ${config.kubeconfigPath}`);
       
     } catch (error) {
-      console.log('⚠️ Kubernetes configuration failed:', error.message);
+      console.error('❌ Failed to initialize Kubernetes client:', error);
       this.isConfigured = false;
+      this.lastError = error.message;
     }
   }
 
-
-  // Add method to reload configuration without waiting for test
-// Add method to reload configuration without waiting for test
-reloadConfigAsync() {
-  console.log('🔄 Reloading Kubernetes configuration asynchronously...');
-  this.setupKubernetesClient();
-  
-  // Test connection in background (don't wait for it)
-  if (this.isConfigured) {
-    setTimeout(() => {
-      this.testConnection().then(result => {
-        if (result.success) {
-          console.log('✅ Background Kubernetes connection test successful');
-        } else {
-          console.log('❌ Background Kubernetes connection test failed:', result.error);
-        }
-      }).catch(error => {
-        console.log('❌ Background connection test error:', error.message);
-      });
-    }, 1000);
-  }
-  
-  return this.isConfigured;
-}
-  // Add method to reload configuration
-  reloadConfig() {
-    console.log('🔄 Reloading Kubernetes configuration...');
-    this.setupKubernetesClient();
-    return this.isConfigured;
+  // Refresh configuration if settings changed
+  refreshConfiguration() {
+    console.log('🔄 Refreshing Kubernetes configuration...');
+    this.initializeKubernetesClient();
   }
 
-async testConnectionWithClient() {
-  if (!this.isConfigured) {
-    return { success: false, error: 'Kubernetes client not configured' };
-  }
-
-  try {
-    console.log('🧪 Testing Kubernetes connection...');
-    console.log('Config context:', this.kc.getCurrentContext());
-    
-    // Use the client directly without complex response handling
-    const response = await this.k8sApi.listNode();
-    
-    console.log('Raw response structure:', {
-      hasResponse: !!response,
-      responseType: typeof response,
-      hasBody: !!response?.body,
-      hasData: !!response?.data,
-      bodyType: typeof response?.body,
-      responseKeys: Object.keys(response || {})
-    });
-    
-    // Try different ways to access the data
-    let nodeData = null;
-    
-    if (response?.body?.items) {
-      nodeData = response.body.items;
-      console.log('Found nodes in response.body.items');
-    } else if (response?.data?.items) {
-      nodeData = response.data.items;
-      console.log('Found nodes in response.data.items');
-    } else if (response?.items) {
-      nodeData = response.items;
-      console.log('Found nodes in response.items');
-    } else {
-      // Log the actual response to see its structure
-      console.log('Full response:', JSON.stringify(response, null, 2));
-      throw new Error('Could not find nodes data in response');
-    }
-    
-    const nodeCount = nodeData ? nodeData.length : 0;
-    console.log(`☸️ Successfully found ${nodeCount} nodes`);
-    
-    return {
-      success: true,
-      message: `Connected successfully to MicroK8s cluster with ${nodeCount} nodes`,
-      nodeCount: nodeCount
-    };
-    
-  } catch (error) {
-    console.error('⚠️ Kubernetes test error:', error.message);
-    
-    // Specific error handling for common MicroK8s issues
-    let friendlyError = error.message;
-    
-    if (error.message.includes('ECONNREFUSED')) {
-      friendlyError = 'Cannot connect to MicroK8s cluster. Is MicroK8s running?';
-    } else if (error.message.includes('ENOTFOUND')) {
-      friendlyError = 'MicroK8s cluster hostname not found. Check network connectivity.';
-    } else if (error.response?.statusCode === 401) {
-      friendlyError = 'Authentication failed. Try: microk8s config > ~/.kube/config';
-    } else if (error.response?.statusCode === 403) {
-      friendlyError = 'Permission denied. Check RBAC permissions.';
-    }
-    
-    return {
-      success: false,
-      error: friendlyError,
-      originalError: error.message
-    };
-  }
-}
-
-async testConnection() {
-  // Try Node.js client first
-  const clientResult = await this.testConnectionWithClient();
-  if (clientResult.success) {
-    return clientResult;
-  }
-  
-  console.log('Node.js client failed, trying kubectl fallback...');
-  return await this.testConnectionWithKubectl();
-}
-
-async testConnectionWithKubectl() {
-  const { exec } = require('child_process');
-  const util = require('util');
-  const execAsync = util.promisify(exec);
-  
-  try {
-    const config = require('./kubernetesConfigService').getConfig();
-    const command = `kubectl --kubeconfig="${config.kubeconfigPath}" get nodes -o json`;
-    
-    console.log('Testing with kubectl command...');
-    const { stdout } = await execAsync(command, { timeout: 15000 });
-    
-    const result = JSON.parse(stdout);
-    const nodeCount = result.items ? result.items.length : 0;
-    
-    return {
-      success: true,
-      message: `kubectl connection successful - found ${nodeCount} nodes`,
-      nodeCount: nodeCount,
-      method: 'kubectl'
-    };
-  } catch (error) {
-    return {
-      success: false,
-      error: `kubectl test failed: ${error.message}`,
-      method: 'kubectl'
-    };
-  }
-}
-
-async getPods(namespace = 'default') {
-  if (!this.isConfigured) {
-    throw new Error('Kubernetes client not configured');
-  }
-
-  // Validate namespace parameter
-  if (!namespace || namespace === null || namespace === undefined) {
-    console.log('⚠️ No namespace provided, using default');
-    namespace = 'default';
-  }
-
-  // Handle 'all' namespace selection from frontend
-  if (namespace === 'all') {
-    console.log('🔍 Fetching pods from all namespaces...');
-    return this.getAllPods();
-  }
-
-  try {
-    console.log(`🔍 Fetching pods from namespace: ${namespace}`);
-    const response = await this.k8sApi.listNamespacedPod(namespace);
-    
-    // Use the same pattern as testConnection
-    let podData = response.items || response.body?.items || response.data?.items;
-    
-    if (!podData) {
-      console.log('Pod response structure:', Object.keys(response));
-      return [];
+  async testConnection() {
+    if (!this.isConfigured) {
+      return {
+        success: false,
+        error: this.lastError || 'Kubernetes client not configured',
+        method: 'client_check'
+      };
     }
 
-    const pods = podData.map(pod => ({
-      name: pod.metadata.name,
-      namespace: pod.metadata.namespace,
-      status: pod.status.phase,
-      ready: this.getPodReadyStatus(pod),
-      restarts: this.getPodRestarts(pod),
-      age: this.calculateAge(pod.metadata.creationTimestamp),
-      node: pod.spec.nodeName,
-      containers: pod.spec.containers.map(container => ({
-        name: container.name,
-        image: container.image,
-        ready: this.getContainerStatus(pod, container.name)
-      }))
-    }));
-
-    console.log(`✅ Retrieved ${pods.length} pods from namespace: ${namespace}`);
-    return pods;
-
-  } catch (error) {
-    console.error(`❌ Failed to get pods from namespace ${namespace}:`, error);
-    
-    // Handle specific errors
-    if (error.message.includes('Forbidden')) {
-      throw new Error(`Access denied to namespace '${namespace}'. Check your permissions.`);
-    } else if (error.message.includes('not found')) {
-      throw new Error(`Namespace '${namespace}' not found.`);
-    } else {
-      throw new Error(`Failed to get pods: ${error.message}`);
+    try {
+      console.log('🧪 Testing Kubernetes connection...');
+      
+      // Set environment variable again to ensure it's current
+      const config = kubernetesConfigService.getConfig();
+      process.env.KUBECONFIG = config.kubeconfigPath;
+      
+      const startTime = Date.now();
+      const result = await this.k8sApi.listNode();
+      const responseTime = Date.now() - startTime;
+      
+      let nodeData = result.items || result.body?.items || result.data?.items;
+      const nodeCount = nodeData ? nodeData.length : 0;
+      
+      console.log(`✅ Kubernetes connection successful - found ${nodeCount} nodes`);
+      
+      return {
+        success: true,
+        message: `Kubernetes connection successful - found ${nodeCount} nodes`,
+        nodeCount: nodeCount,
+        responseTime: `${responseTime}ms`,
+        method: 'node_list'
+      };
+    } catch (error) {
+      console.error(`❌ Kubernetes connection test failed: ${error.message}`);
+      return {
+        success: false,
+        error: `Kubernetes test failed: ${error.message}`,
+        method: 'node_list'
+      };
     }
   }
-}
 
-// Also add this improved getAllPods method
-async getAllPods() {
-  if (!this.isConfigured) {
-    throw new Error('Kubernetes client not configured');
-  }
-
-  try {
-    console.log('🔍 Fetching pods from all namespaces...');
-    const response = await this.k8sApi.listPodForAllNamespaces();
-    
-    let podData = response.items || response.body?.items || response.data?.items;
-    
-    if (!podData) {
-      console.log('All pods response structure:', Object.keys(response));
-      return [];
+  async getPods(namespace = 'default') {
+    if (!this.isConfigured) {
+      throw new Error('Kubernetes client not configured');
     }
 
-    const pods = podData.map(pod => ({
-      name: pod.metadata.name,
-      namespace: pod.metadata.namespace,
-      status: pod.status.phase,
-      ready: this.getPodReadyStatus(pod),
-      restarts: this.getPodRestarts(pod),
-      age: this.calculateAge(pod.metadata.creationTimestamp),
-      node: pod.spec.nodeName,
-      labels: pod.metadata.labels || {}
-    }));
+    // Validate namespace parameter
+    if (!namespace || namespace === null || namespace === undefined || namespace === 'null') {
+      console.log('⚠️ No namespace provided, using default');
+      namespace = 'default';
+    }
 
-    console.log(`✅ Retrieved ${pods.length} pods from all namespaces`);
-    return pods;
+    // Handle 'all' namespace selection from frontend
+    if (namespace === 'all') {
+      console.log('🔍 Fetching pods from all namespaces...');
+      return this.getAllPods();
+    }
 
-  } catch (error) {
-    console.error('❌ Failed to get all pods:', error);
-    throw new Error(`Failed to get all pods: ${error.message}`);
+    try {
+      console.log(`🔍 Fetching pods from namespace: ${namespace}`);
+      
+      // Ensure environment variable is set
+      const config = kubernetesConfigService.getConfig();
+      process.env.KUBECONFIG = config.kubeconfigPath;
+      
+      const response = await this.k8sApi.listNamespacedPod(namespace);
+      
+      // Use the same pattern as testConnection
+      let podData = response.items || response.body?.items || response.data?.items;
+      
+      if (!podData) {
+        console.log('Pod response structure:', Object.keys(response));
+        return [];
+      }
+
+      const pods = podData.map(pod => ({
+        name: pod.metadata.name,
+        namespace: pod.metadata.namespace,
+        status: pod.status.phase,
+        ready: this.getPodReadyStatus(pod),
+        restarts: this.getPodRestarts(pod),
+        age: this.calculateAge(pod.metadata.creationTimestamp),
+        node: pod.spec.nodeName,
+        containers: pod.spec.containers.map(container => ({
+          name: container.name,
+          image: container.image,
+          ready: this.getContainerStatus(pod, container.name)
+        }))
+      }));
+
+      console.log(`✅ Retrieved ${pods.length} pods from namespace: ${namespace}`);
+      return pods;
+
+    } catch (error) {
+      console.error(`❌ Failed to get pods from namespace ${namespace}:`, error);
+      
+      // Handle specific errors
+      if (error.message.includes('Forbidden')) {
+        throw new Error(`Access denied to namespace '${namespace}'. Check your permissions.`);
+      } else if (error.message.includes('not found')) {
+        throw new Error(`Namespace '${namespace}' not found.`);
+      } else {
+        throw new Error(`Failed to get pods: ${error.message}`);
+      }
+    }
   }
-}
+
+  async getAllPods() {
+    if (!this.isConfigured) {
+      throw new Error('Kubernetes client not configured');
+    }
+
+    try {
+      console.log('🔍 Fetching pods from all namespaces...');
+      
+      // Ensure environment variable is set
+      const config = kubernetesConfigService.getConfig();
+      process.env.KUBECONFIG = config.kubeconfigPath;
+      
+      const response = await this.k8sApi.listPodForAllNamespaces();
+      
+      let podData = response.items || response.body?.items || response.data?.items;
+      
+      if (!podData) {
+        console.log('All pods response structure:', Object.keys(response));
+        return [];
+      }
+
+      const pods = podData.map(pod => ({
+        name: pod.metadata.name,
+        namespace: pod.metadata.namespace,
+        status: pod.status.phase,
+        ready: this.getPodReadyStatus(pod),
+        restarts: this.getPodRestarts(pod),
+        age: this.calculateAge(pod.metadata.creationTimestamp),
+        node: pod.spec.nodeName,
+        labels: pod.metadata.labels || {}
+      }));
+
+      console.log(`✅ Retrieved ${pods.length} pods from all namespaces`);
+      return pods;
+
+    } catch (error) {
+      console.error('❌ Failed to get all pods:', error);
+      throw new Error(`Failed to get all pods: ${error.message}`);
+    }
+  }
 
   async getNamespaces() {
     if (!this.isConfigured) {
@@ -293,6 +214,12 @@ async getAllPods() {
     }
 
     try {
+      console.log('🔍 Fetching namespaces...');
+      
+      // Ensure environment variable is set
+      const config = kubernetesConfigService.getConfig();
+      process.env.KUBECONFIG = config.kubeconfigPath;
+      
       const response = await this.k8sApi.listNamespace();
       
       let namespaceData = response.items || response.body?.items || response.data?.items;
@@ -302,11 +229,14 @@ async getAllPods() {
         return [];
       }
       
-      return namespaceData.map(ns => ({
+      const namespaces = namespaceData.map(ns => ({
         name: ns.metadata.name,
         status: ns.status.phase,
         age: this.calculateAge(ns.metadata.creationTimestamp)
       }));
+
+      console.log(`✅ Retrieved ${namespaces.length} namespaces`);
+      return namespaces;
     } catch (error) {
       console.error('Failed to get namespaces:', error);
       throw error;
@@ -319,6 +249,12 @@ async getAllPods() {
     }
 
     try {
+      console.log('🔍 Fetching nodes...');
+      
+      // Ensure environment variable is set
+      const config = kubernetesConfigService.getConfig();
+      process.env.KUBECONFIG = config.kubeconfigPath;
+      
       const response = await this.k8sApi.listNode();
       
       let nodeData = response.items || response.body?.items || response.data?.items;
@@ -328,7 +264,7 @@ async getAllPods() {
         return [];
       }
       
-      return nodeData.map(node => ({
+      const nodes = nodeData.map(node => ({
         name: node.metadata.name,
         status: this.getNodeStatus(node),
         roles: this.getNodeRoles(node),
@@ -340,6 +276,9 @@ async getAllPods() {
           pods: node.status.capacity.pods
         }
       }));
+
+      console.log(`✅ Retrieved ${nodes.length} nodes`);
+      return nodes;
     } catch (error) {
       console.error('Failed to get nodes:', error);
       throw error;
@@ -404,6 +343,10 @@ async getAllPods() {
     }
 
     try {
+      // Ensure environment variable is set
+      const config = kubernetesConfigService.getConfig();
+      process.env.KUBECONFIG = config.kubeconfigPath;
+      
       const [pods, nodes, namespaces] = await Promise.all([
         this.getAllPods(),
         this.getNodes(),
