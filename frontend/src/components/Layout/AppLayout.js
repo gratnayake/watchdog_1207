@@ -22,31 +22,23 @@ import SimpleScriptManager from '../Scripts/SimpleScriptManager';
 const { Content, Footer } = Layout;
 
 const AppLayout = () => {
-  const [currentPage, setCurrentPage] = useState('url-monitoring'); // DEFAULT TO URL MONITORING FOR CLIENT MODE
+  // FIXED: Set default page based on mode
+  const { isServerMode } = useMode();
+  const [currentPage, setCurrentPage] = useState(isServerMode ? 'realtime-dashboard' : 'url-monitoring');
   const { isAdmin } = useAuth();
   const { isDarkMode } = useTheme();  
-  const { isServerMode, loading: modeLoading } = useMode();
+  const { loading: modeLoading } = useMode();
 
+  // FIXED: Remove the problematic useEffect that was causing the redirect
   useEffect(() => {
     if (!modeLoading && !isServerMode) {
-      // CLIENT MODE: Only URL monitoring allowed
-      const allowedPages = ['url-monitoring'];
-      
-      // Add admin-only pages if user is admin
-      if (isAdmin) {
-        allowedPages.push('email-config', 'users', 'kubernetes-config');
-      }
-      
+      const allowedPages = ['url-monitoring', 'kubernetes-config'];
       if (!allowedPages.includes(currentPage)) {
         setCurrentPage('url-monitoring');
       }
     }
-    
-    // SET DEFAULT PAGE BASED ON MODE
-    if (!modeLoading && isServerMode && currentPage === 'url-monitoring') {
-      setCurrentPage('realtime-dashboard'); // Switch to realtime dashboard in server mode
-    }
-  }, [isServerMode, modeLoading, isAdmin, currentPage]);
+    // REMOVED: The problematic auto-redirect logic that was changing URL monitoring to realtime
+  }, [isServerMode, modeLoading, currentPage]);
 
   const renderContent = () => {
     if (modeLoading) {
@@ -90,6 +82,7 @@ const AppLayout = () => {
       case 'kubernetes':
         return <KubernetesMonitor />;
       case 'url-monitoring':
+        // FIXED: Return URL Monitoring instead of redirecting
         return <UrlMonitoring />;      
       case 'kubernetes-config':
         return isAdmin ? <KubernetesConfig /> : <RealtimeDashboard />;
@@ -127,7 +120,7 @@ const AppLayout = () => {
       case 'kubernetes-config':
         return 'Kubernetes Configuration';
       case 'script-manager':
-        return 'Cluster & DB Control';
+        return 'Script Manager';
       case 'threshold-config':
         return 'Alert Thresholds';
       default:

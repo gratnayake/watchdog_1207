@@ -1,3 +1,5 @@
+// Replace your DatabaseConfig.js with this enhanced version
+
 import React, { useState, useEffect } from 'react';
 import { 
   Card, 
@@ -10,33 +12,36 @@ import {
   Col, 
   Typography,
   message,
-  Spin,
-  Select  
+  Divider,
+  InputNumber,
+  Select,
+  Spin
 } from 'antd';
 import { 
   DatabaseOutlined, 
   SaveOutlined, 
   CheckCircleOutlined,
   EyeOutlined,
-  EyeInvisibleOutlined
+  EyeInvisibleOutlined,
+  MailOutlined,
+  TeamOutlined
 } from '@ant-design/icons';
-import { databaseAPI, emailAPI  } from '../../services/api';
-import DbSizeThreshold from '../Thresholds/DbSizeThreshold';
+import { databaseAPI, emailAPI } from '../../services/api';
 
 const { Title, Text } = Typography;
-const { Option } = Select; 
+const { Option } = Select;
 
 const DatabaseConfig = () => {
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
   const [testLoading, setTestLoading] = useState(false);
   const [config, setConfig] = useState(null);
-  const [alert, setAlert] = useState({ type: '', message: '', visible: false });
   const [emailGroups, setEmailGroups] = useState([]);
+  const [alert, setAlert] = useState({ type: '', message: '', visible: false });
 
   useEffect(() => {
     loadConfig();
-    loadEmailGroups(); 
+    loadEmailGroups();
   }, []);
 
   const loadConfig = async () => {
@@ -46,17 +51,18 @@ const DatabaseConfig = () => {
       
       if (response.success) {
         setConfig(response.config);
-        // Fill form with existing config (except password)
+        // Set form values INCLUDING emailGroupId
         form.setFieldsValue({
           host: response.config.host,
           port: response.config.port,
           serviceName: response.config.serviceName,
           username: response.config.username,
-          password: '' // Don't show existing password
+          password: '', // Don't show existing password
+          emailGroupId: response.config.emailGroupId || null // Add this field
         });
       }
     } catch (error) {
-      console.error('Failed to load config:', error);
+      console.error('Failed to load database config:', error);
       showAlert('error', 'Failed to load database configuration');
     } finally {
       setLoading(false);
@@ -67,13 +73,13 @@ const DatabaseConfig = () => {
     try {
       const response = await emailAPI.getEmailGroups();
       if (response.success) {
-        setEmailGroups(response.data.filter(g => g.enabled));
+        setEmailGroups(response.data || []);
       }
     } catch (error) {
       console.error('Failed to load email groups:', error);
     }
   };
-  
+
   const showAlert = (type, message) => {
     setAlert({ type, message, visible: true });
     setTimeout(() => {
@@ -83,7 +89,7 @@ const DatabaseConfig = () => {
 
   const handleTestConnection = async () => {
     try {
-      const values = await form.validateFields();
+      const values = await form.validateFields(['host', 'port', 'serviceName', 'username', 'password']);
       setTestLoading(true);
       
       console.log('Testing connection with:', { ...values, password: '***' });
@@ -117,13 +123,13 @@ const DatabaseConfig = () => {
       const values = await form.validateFields();
       setLoading(true);
       
-      console.log('Saving config:', { ...values, password: '***' });
+      console.log('Saving config with email group:', { ...values, password: '***' });
       
       const response = await databaseAPI.saveConfig(values);
       
       if (response.success) {
         setConfig(response.config);
-        showAlert('success', 'Database configuration saved successfully to JSON file!');
+        showAlert('success', 'Database configuration saved successfully with email group!');
         message.success('Configuration saved to JSON file!');
         
         // Reload config to get updated data
@@ -193,8 +199,7 @@ const DatabaseConfig = () => {
                     rules={[{ required: true, message: 'Please enter database host!' }]}
                   >
                     <Input 
-                      placeholder="e.g., localhost, 192.168.1.100, or oracle.company.com"
-                      prefix={<DatabaseOutlined />}
+                      placeholder="Database server hostname or IP address"
                       size="large"
                     />
                   </Form.Item>
@@ -205,10 +210,12 @@ const DatabaseConfig = () => {
                     label="Port"
                     rules={[{ required: true, message: 'Please enter port!' }]}
                   >
-                    <Input 
-                      type="number"
+                    <InputNumber 
                       placeholder="1521"
+                      min={1}
+                      max={65535}
                       size="large"
+                      style={{ width: '100%' }}
                     />
                   </Form.Item>
                 </Col>
@@ -220,7 +227,7 @@ const DatabaseConfig = () => {
                 rules={[{ required: true, message: 'Please enter service name!' }]}
               >
                 <Input 
-                  placeholder="e.g., XE, ORCL, PROD, or your Oracle service name"
+                  placeholder="Oracle service name (e.g., ORCL, XE, XEPDB1)"
                   size="large"
                 />
               </Form.Item>
@@ -247,23 +254,50 @@ const DatabaseConfig = () => {
                   iconRender={visible => (visible ? <EyeOutlined /> : <EyeInvisibleOutlined />)}
                 />
               </Form.Item>
-              // Add to the form after the password field:
+
+              <Divider orientation="left">Alert Configuration</Divider>
+
               <Form.Item
                 name="emailGroupId"
                 label="Database Alert Group"
+                extra="Select which email group should receive database alerts (up/down notifications)"
               >
                 <Select 
                   placeholder="Select email group for database alerts (optional)"
                   allowClear
+                  size="large"
+                  loading={emailGroups.length === 0}
                 >
-                  <Option value={null}>🔕 No email alerts</Option>
+                  <Option value={null}>
+                    <Space>
+                      🔕 
+                      <span>No email alerts</span>
+                    </Space>
+                  </Option>
                   {emailGroups.map(group => (
                     <Option key={group.id} value={group.id}>
-                      📧 {group.name} ({group.emails.length} recipients)
+                      <Space>
+                        <TeamOutlined />
+                        <span>{group.name}</span>
+                        <span style={{ color: '#8c8c8c' }}>
+                          ({group.emails.length} recipients)
+                        </span>
+                      </Space>
                     </Option>
                   ))}
                 </Select>
               </Form.Item>
+
+              {emailGroups.length === 0 && (
+                <Alert
+                  message="No Email Groups Available"
+                  description="Create email groups in Email Management to enable database alerts."
+                  type="info"
+                  showIcon
+                  style={{ marginBottom: 16 }}
+                />
+              )}
+
               <Form.Item style={{ marginBottom: 0, marginTop: 24 }}>
                 <Space size="large">
                   <Button 
@@ -282,7 +316,7 @@ const DatabaseConfig = () => {
                     loading={loading}
                     size="large"
                   >
-                    Save to JSON File
+                    Save Configuration
                   </Button>
                 </Space>
               </Form.Item>
@@ -297,79 +331,63 @@ const DatabaseConfig = () => {
                 <Alert
                   message={config.isConfigured ? "✅ Database Configured" : "⚠️ Database Not Configured"}
                   type={config.isConfigured ? "success" : "warning"}
-                  showIcon
                   style={{ marginBottom: 16 }}
                 />
-
+                
                 {config.isConfigured && (
-                  <>
-                    <div style={{ marginBottom: 12 }}>
-                      <Text strong>Connection String:</Text>
-                      <br />
-                      <Text code style={{ fontSize: '12px' }}>
-                        {config.host}:{config.port}/{config.serviceName}
-                      </Text>
-                    </div>
-
-                    <div style={{ marginBottom: 12 }}>
-                      <Text strong>Username:</Text>
-                      <br />
-                      <Text>{config.username}</Text>
-                    </div>
-
-                    <div style={{ marginBottom: 12 }}>
-                      <Text strong>JSON File:</Text>
-                      <br />
-                      <Text code style={{ fontSize: '11px' }}>
-                        backend/data/db-config.json
-                      </Text>
-                    </div>
-
-                    <div>
-                      <Text strong>Last Updated:</Text>
-                      <br />
-                      <Text style={{ fontSize: '12px' }}>
-                        {new Date(config.lastUpdated).toLocaleString()}
-                      </Text>
-                    </div>
-                  </>
+                  <div>
+                    <Title level={5}>Current Settings:</Title>
+                    <p><strong>Host:</strong> {config.host}</p>
+                    <p><strong>Port:</strong> {config.port}</p>
+                    <p><strong>Service:</strong> {config.serviceName}</p>
+                    <p><strong>Username:</strong> {config.username}</p>
+                    
+                    {config.emailGroupId && (
+                      <div>
+                        <p><strong>Alert Group:</strong> 
+                          {emailGroups.find(g => g.id === config.emailGroupId)?.name || 'Unknown Group'}
+                        </p>
+                      </div>
+                    )}
+                    
+                    {!config.emailGroupId && (
+                      <Alert
+                        message="No Email Alerts"
+                        description="Select an email group to receive database alerts"
+                        type="info"
+                        size="small"
+                      />
+                    )}
+                  </div>
                 )}
               </div>
             ) : (
-              <div style={{ textAlign: 'center', padding: '20px' }}>
-                <DatabaseOutlined style={{ fontSize: 48, color: '#d9d9d9', marginBottom: 16 }} />
-                <Text type="secondary">No configuration found</Text>
-              </div>
+              <Alert
+                message="No Configuration Found"
+                description="Please configure your Oracle database connection"
+                type="info"
+              />
             )}
           </Card>
 
-          <Card title="Quick Examples" style={{ marginTop: 16 }}>
-            <div style={{ fontSize: '12px' }}>
-              <div style={{ marginBottom: 8 }}>
-                <Text strong>Local Oracle XE:</Text>
-                <br />
-                <Text code>localhost:1521/XE</Text>
-              </div>
-
-              <div style={{ marginBottom: 8 }}>
-                <Text strong>Remote Server:</Text>
-                <br />
-                <Text code>192.168.1.100:1521/ORCL</Text>
-              </div>
-
-              <div style={{ marginBottom: 8 }}>
-                <Text strong>Oracle Cloud:</Text>
-                <br />
-                <Text code>host.oraclecloud.com:1521/SERVICE</Text>
-              </div>
+          <Card title="Connection Tips" style={{ marginTop: 16 }}>
+            <div>
+              <Title level={5}>Common Service Names:</Title>
+              <ul>
+                <li><strong>XE:</strong> Oracle Express Edition</li>
+                <li><strong>ORCL:</strong> Standard Oracle instance</li>
+                <li><strong>XEPDB1:</strong> Pluggable database in XE</li>
+                <li><strong>PDB1:</strong> Common pluggable database name</li>
+              </ul>
+              
+              <Title level={5}>Default Ports:</Title>
+              <ul>
+                <li><strong>1521:</strong> Standard Oracle port</li>
+                <li><strong>1522:</strong> Alternative Oracle port</li>
+              </ul>
             </div>
           </Card>
         </Col>
-        <Row gutter={[24, 24]}>
-  <Col span={24}>
-    <DbSizeThreshold />
-  </Col>
-</Row>
       </Row>
     </div>
   );

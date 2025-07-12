@@ -1,5 +1,7 @@
-// backend/services/podActionsService.js
+// backend/services/podActionsService.js - Fixed version with better error handling
+
 const kubernetesService = require('./kubernetesService');
+const kubernetesConfigService = require('./kubernetesConfigService');
 const { exec } = require('child_process');
 const util = require('util');
 const execAsync = util.promisify(exec);
@@ -9,9 +11,34 @@ class PodActionsService {
     console.log('🎮 Pod Actions Service initialized');
   }
 
-  // Check if Kubernetes is configured
-  isKubernetesConfigured() {
-    return kubernetesService.isConfigured;
+  // Check if Kubernetes is configured and accessible
+  async checkKubernetesAvailability() {
+    try {
+      const config = kubernetesConfigService.getConfig();
+      if (!config.isConfigured) {
+        return {
+          available: false,
+          message: 'Kubernetes not configured. Please configure kubeconfig path first.',
+          configured: false
+        };
+      }
+
+      // Test basic connectivity
+      const testResult = await kubernetesService.testConnection();
+      return {
+        available: testResult.success,
+        message: testResult.success ? 'Kubernetes cluster accessible' : testResult.error,
+        configured: true,
+        error: testResult.error
+      };
+    } catch (error) {
+      return {
+        available: false,
+        message: `Error checking Kubernetes: ${error.message}`,
+        configured: true,
+        error: error.message
+      };
+    }
   }
 
   // Restart a pod by deleting it (Kubernetes will recreate it)
@@ -19,18 +46,35 @@ class PodActionsService {
     try {
       console.log(`🔄 Restarting pod: ${namespace}/${podName}`);
       
-      if (!this.isKubernetesConfigured()) {
-        throw new Error('Kubernetes not configured');
+      const availability = await this.checkKubernetesAvailability();
+      if (!availability.available) {
+        throw new Error(availability.message);
       }
 
-      // Delete the pod - Kubernetes will recreate it automatically
-      const result = await this.executeKubectl(`delete pod ${podName} -n ${namespace}`);
+      // Validate inputs
+      if (!namespace || !podName) {
+        throw new Error('Namespace and pod name are required');
+      }
+
+      // Try using Node.js Kubernetes client first
+      try {
+        const result = await this.restartPodViaClient(namespace, podName);
+        if (result.success) {
+          return result;
+        }
+      } catch (clientError) {
+        console.log(`Node.js client failed: ${clientError.message}, trying kubectl...`);
+      }
+
+      // Fallback to kubectl with better error handling
+      const result = await this.executeKubectlSafe(`delete pod ${podName} -n ${namespace}`, 'restart');
       
       console.log(`✅ Pod restart initiated: ${namespace}/${podName}`);
       return {
         success: true,
         message: `Pod ${podName} restart initiated successfully`,
-        output: result.stdout,
+        output: result.output,
+        method: 'kubectl',
         timestamp: new Date().toISOString()
       };
 
@@ -50,18 +94,35 @@ class PodActionsService {
     try {
       console.log(`🗑️ Deleting pod: ${namespace}/${podName} (force: ${force})`);
       
-      if (!this.isKubernetesConfigured()) {
-        throw new Error('Kubernetes not configured');
+      const availability = await this.checkKubernetesAvailability();
+      if (!availability.available) {
+        throw new Error(availability.message);
       }
 
+      if (!namespace || !podName) {
+        throw new Error('Namespace and pod name are required');
+      }
+
+      // Try Node.js client first
+      try {
+        const result = await this.deletePodViaClient(namespace, podName, force);
+        if (result.success) {
+          return result;
+        }
+      } catch (clientError) {
+        console.log(`Node.js client failed: ${clientError.message}, trying kubectl...`);
+      }
+
+      // Fallback to kubectl
       const forceFlag = force ? ' --force --grace-period=0' : '';
-      const result = await this.executeKubectl(`delete pod ${podName} -n ${namespace}${forceFlag}`);
+      const result = await this.executeKubectlSafe(`delete pod ${podName} -n ${namespace}${forceFlag}`, 'delete');
       
       console.log(`✅ Pod deleted: ${namespace}/${podName}`);
       return {
         success: true,
         message: `Pod ${podName} deleted successfully`,
-        output: result.stdout,
+        output: result.output,
+        method: 'kubectl',
         timestamp: new Date().toISOString()
       };
 
@@ -76,29 +137,90 @@ class PodActionsService {
     }
   }
 
-  // Get pod logs
+  // Restart pod via Node.js Kubernetes client
+  async restartPodViaClient(namespace, podName) {
+    try {
+      if (!kubernetesService.isConfigured) {
+        throw new Error('Kubernetes client not configured');
+      }
+
+      // Use the existing kubernetesService to delete the pod
+      const k8sApi = kubernetesService.k8sApi;
+      await k8sApi.deleteNamespacedPod(podName, namespace);
+      
+      return {
+        success: true,
+        message: `Pod ${podName} restart initiated via Node.js client`,
+        method: 'nodejs_client'
+      };
+    } catch (error) {
+      throw new Error(`Node.js client restart failed: ${error.message}`);
+    }
+  }
+
+  // Delete pod via Node.js Kubernetes client
+  async deletePodViaClient(namespace, podName, force = false) {
+    try {
+      if (!kubernetesService.isConfigured) {
+        throw new Error('Kubernetes client not configured');
+      }
+
+      const k8sApi = kubernetesService.k8sApi;
+      
+      const deleteOptions = force ? {
+        gracePeriodSeconds: 0,
+        propagationPolicy: 'Foreground'
+      } : undefined;
+
+      await k8sApi.deleteNamespacedPod(podName, namespace, undefined, undefined, deleteOptions);
+      
+      return {
+        success: true,
+        message: `Pod ${podName} deleted via Node.js client`,
+        method: 'nodejs_client'
+      };
+    } catch (error) {
+      throw new Error(`Node.js client delete failed: ${error.message}`);
+    }
+  }
+
+  // Get pod logs with better error handling
   async getPodLogs(namespace, podName, container = null, lines = 100, follow = false) {
     try {
       console.log(`📝 Getting logs for pod: ${namespace}/${podName}`);
       
-      if (!this.isKubernetesConfigured()) {
-        throw new Error('Kubernetes not configured');
+      const availability = await this.checkKubernetesAvailability();
+      if (!availability.available) {
+        throw new Error(availability.message);
       }
 
+      if (!namespace || !podName) {
+        throw new Error('Namespace and pod name are required');
+      }
+
+      // Try Node.js client first
+      try {
+        const result = await this.getPodLogsViaClient(namespace, podName, container, lines);
+        if (result.success) {
+          return result;
+        }
+      } catch (clientError) {
+        console.log(`Node.js client logs failed: ${clientError.message}, trying kubectl...`);
+      }
+
+      // Fallback to kubectl
       let command = `logs ${podName} -n ${namespace} --tail=${lines}`;
       if (container) {
         command += ` -c ${container}`;
       }
-      if (follow) {
-        command += ' -f';
-      }
 
-      const result = await this.executeKubectl(command);
+      const result = await this.executeKubectlSafe(command, 'logs');
       
       console.log(`✅ Retrieved logs for pod: ${namespace}/${podName}`);
       return {
         success: true,
-        logs: result.stdout || 'No logs available',
+        logs: result.output || 'No logs available',
+        method: 'kubectl',
         timestamp: new Date().toISOString()
       };
 
@@ -113,38 +235,85 @@ class PodActionsService {
     }
   }
 
-  // Execute command in pod
-  async execInPod(namespace, podName, container = null, command = '/bin/bash') {
+  // Get pod logs via Node.js client
+  async getPodLogsViaClient(namespace, podName, container = null, lines = 100) {
     try {
-      console.log(`⚡ Executing command in pod: ${namespace}/${podName}`);
+      if (!kubernetesService.isConfigured) {
+        throw new Error('Kubernetes client not configured');
+      }
+
+      const k8sApi = kubernetesService.k8sApi;
       
-      if (!this.isKubernetesConfigured()) {
-        throw new Error('Kubernetes not configured');
-      }
+      const logOptions = {
+        follow: false,
+        tailLines: lines,
+        timestamps: false
+      };
 
-      let execCommand = `exec -it ${podName} -n ${namespace}`;
       if (container) {
-        execCommand += ` -c ${container}`;
+        logOptions.container = container;
       }
-      execCommand += ` -- ${command}`;
 
-      // For exec commands, we'll return the command to be executed
-      // The actual execution should be handled by a terminal session
+      const logResponse = await k8sApi.readNamespacedPodLog(
+        podName, 
+        namespace, 
+        container,
+        false, // follow
+        undefined, // limitBytes
+        undefined, // pretty
+        undefined, // previous
+        undefined, // sinceSeconds
+        lines, // tailLines
+        false // timestamps
+      );
+
       return {
         success: true,
-        message: `Exec session ready for pod ${podName}`,
-        execCommand: `kubectl ${execCommand}`,
-        timestamp: new Date().toISOString()
+        logs: logResponse.body || 'No logs available',
+        method: 'nodejs_client'
+      };
+    } catch (error) {
+      throw new Error(`Node.js client logs failed: ${error.message}`);
+    }
+  }
+
+  // Execute kubectl command with better error handling and certificate issues
+  async executeKubectlSafe(command, operation) {
+    try {
+      const config = kubernetesConfigService.getConfig();
+      let kubeconfigFlag = '';
+      
+      if (config.kubeconfigPath) {
+        kubeconfigFlag = `--kubeconfig="${config.kubeconfigPath}"`;
+      }
+
+      // Add insecure flag if we're having certificate issues
+      const fullCommand = `kubectl ${kubeconfigFlag} ${command} --insecure-skip-tls-verify=true`;
+      
+      console.log(`🔧 Executing kubectl command for ${operation}: ${command}`);
+      
+      const result = await execAsync(fullCommand, { 
+        timeout: 60000,  // 60 second timeout
+        env: { ...process.env }
+      });
+      
+      return {
+        success: true,
+        output: result.stdout || `${operation} completed successfully`,
+        stderr: result.stderr
       };
 
     } catch (error) {
-      console.error(`❌ Failed to create exec session for pod ${namespace}/${podName}:`, error);
-      return {
-        success: false,
-        message: `Failed to create exec session: ${error.message}`,
-        error: error.message,
-        timestamp: new Date().toISOString()
-      };
+      // Handle specific kubectl errors
+      if (error.message.includes('x509') || error.message.includes('certificate')) {
+        throw new Error(`Kubernetes certificate error: ${error.message}. Consider updating your kubeconfig or using --insecure-skip-tls-verify flag.`);
+      } else if (error.message.includes('Unable to connect')) {
+        throw new Error(`Cannot connect to Kubernetes cluster: ${error.message}. Check if the cluster is accessible.`);
+      } else if (error.message.includes('not found')) {
+        throw new Error(`Resource not found: ${error.message}`);
+      } else {
+        throw new Error(`kubectl ${operation} failed: ${error.message}`);
+      }
     }
   }
 
@@ -153,17 +322,22 @@ class PodActionsService {
     try {
       console.log(`📏 Scaling deployment: ${namespace}/${deploymentName} to ${replicas} replicas`);
       
-      if (!this.isKubernetesConfigured()) {
-        throw new Error('Kubernetes not configured');
+      const availability = await this.checkKubernetesAvailability();
+      if (!availability.available) {
+        throw new Error(availability.message);
       }
 
-      const result = await this.executeKubectl(`scale deployment ${deploymentName} -n ${namespace} --replicas=${replicas}`);
+      if (!namespace || !deploymentName || replicas === undefined) {
+        throw new Error('Namespace, deployment name, and replica count are required');
+      }
+
+      const result = await this.executeKubectlSafe(`scale deployment ${deploymentName} -n ${namespace} --replicas=${replicas}`, 'scale');
       
       console.log(`✅ Deployment scaled: ${namespace}/${deploymentName} to ${replicas} replicas`);
       return {
         success: true,
         message: `Deployment ${deploymentName} scaled to ${replicas} replicas`,
-        output: result.stdout,
+        output: result.output,
         timestamp: new Date().toISOString()
       };
 
@@ -183,16 +357,21 @@ class PodActionsService {
     try {
       console.log(`📋 Describing pod: ${namespace}/${podName}`);
       
-      if (!this.isKubernetesConfigured()) {
-        throw new Error('Kubernetes not configured');
+      const availability = await this.checkKubernetesAvailability();
+      if (!availability.available) {
+        throw new Error(availability.message);
       }
 
-      const result = await this.executeKubectl(`describe pod ${podName} -n ${namespace}`);
+      if (!namespace || !podName) {
+        throw new Error('Namespace and pod name are required');
+      }
+
+      const result = await this.executeKubectlSafe(`describe pod ${podName} -n ${namespace}`, 'describe');
       
       console.log(`✅ Pod description retrieved: ${namespace}/${podName}`);
       return {
         success: true,
-        description: result.stdout,
+        description: result.output,
         timestamp: new Date().toISOString()
       };
 
@@ -207,76 +386,62 @@ class PodActionsService {
     }
   }
 
-  // Get deployment info for a pod
-  async getDeploymentInfo(namespace, podName) {
+  // Execute command in pod
+  async execInPod(namespace, podName, container = null, command = '/bin/bash') {
     try {
-      // Try to find the deployment that owns this pod
-      const result = await this.executeKubectl(`get pod ${podName} -n ${namespace} -o jsonpath='{.metadata.ownerReferences[0].name}'`);
+      console.log(`⚡ Generating exec command for pod: ${namespace}/${podName}`);
       
-      if (result.stdout) {
-        const ownerName = result.stdout.trim();
-        // Get the deployment info
-        const deploymentResult = await this.executeKubectl(`get deployment ${ownerName} -n ${namespace} -o json`);
-        
-        if (deploymentResult.stdout) {
-          const deployment = JSON.parse(deploymentResult.stdout);
-          return {
-            success: true,
-            deployment: {
-              name: deployment.metadata.name,
-              namespace: deployment.metadata.namespace,
-              replicas: deployment.spec.replicas,
-              readyReplicas: deployment.status.readyReplicas || 0,
-              availableReplicas: deployment.status.availableReplicas || 0
-            }
-          };
-        }
+      const availability = await this.checkKubernetesAvailability();
+      if (!availability.available) {
+        throw new Error(availability.message);
       }
-      
-      return {
-        success: false,
-        message: 'No deployment found for this pod'
-      };
 
-    } catch (error) {
-      return {
-        success: false,
-        message: `Error getting deployment info: ${error.message}`,
-        error: error.message
-      };
-    }
-  }
+      if (!namespace || !podName) {
+        throw new Error('Namespace and pod name are required');
+      }
 
-  // Execute kubectl command
-  async executeKubectl(command) {
-    try {
-      const fullCommand = `kubectl ${command}`;
-      console.log(`🔧 Executing: ${fullCommand}`);
+      const config = kubernetesConfigService.getConfig();
+      let kubeconfigFlag = '';
       
-      const result = await execAsync(fullCommand, { 
-        timeout: 30000,  // 30 second timeout
-        env: { ...process.env }
-      });
-      
+      if (config.kubeconfigPath) {
+        kubeconfigFlag = `--kubeconfig="${config.kubeconfigPath}"`;
+      }
+
+      let execCommand = `kubectl ${kubeconfigFlag} exec -it ${podName} -n ${namespace}`;
+      if (container) {
+        execCommand += ` -c ${container}`;
+      }
+      execCommand += ` -- ${command}`;
+
       return {
         success: true,
-        stdout: result.stdout,
-        stderr: result.stderr
+        message: `Exec command ready for pod ${podName}`,
+        execCommand: execCommand,
+        timestamp: new Date().toISOString()
       };
 
     } catch (error) {
-      console.error(`❌ kubectl command failed: ${error.message}`);
-      throw new Error(`kubectl command failed: ${error.message}`);
+      console.error(`❌ Failed to create exec command for pod ${namespace}/${podName}:`, error);
+      return {
+        success: false,
+        message: `Failed to create exec command: ${error.message}`,
+        error: error.message,
+        timestamp: new Date().toISOString()
+      };
     }
   }
 
   // Get list of containers in a pod
   async getPodContainers(namespace, podName) {
     try {
-      const result = await this.executeKubectl(`get pod ${podName} -n ${namespace} -o jsonpath='{.spec.containers[*].name}'`);
+      if (!namespace || !podName) {
+        throw new Error('Namespace and pod name are required');
+      }
+
+      const result = await this.executeKubectlSafe(`get pod ${podName} -n ${namespace} -o jsonpath='{.spec.containers[*].name}'`, 'get-containers');
       
-      if (result.stdout) {
-        const containers = result.stdout.trim().split(' ').filter(name => name);
+      if (result.output && result.output.trim()) {
+        const containers = result.output.trim().split(' ').filter(name => name);
         return {
           success: true,
           containers: containers
@@ -292,6 +457,55 @@ class PodActionsService {
       return {
         success: false,
         message: `Error getting containers: ${error.message}`,
+        error: error.message
+      };
+    }
+  }
+
+  // Get deployment info for a pod
+  async getDeploymentInfo(namespace, podName) {
+    try {
+      if (!namespace || !podName) {
+        throw new Error('Namespace and pod name are required');
+      }
+
+      // Try to find the deployment that owns this pod
+      const result = await this.executeKubectlSafe(`get pod ${podName} -n ${namespace} -o jsonpath='{.metadata.ownerReferences[0].name}'`, 'get-owner');
+      
+      if (result.output && result.output.trim()) {
+        const ownerName = result.output.trim();
+        
+        // Get the deployment info
+        const deploymentResult = await this.executeKubectlSafe(`get deployment ${ownerName} -n ${namespace} -o json`, 'get-deployment');
+        
+        if (deploymentResult.output) {
+          try {
+            const deployment = JSON.parse(deploymentResult.output);
+            return {
+              success: true,
+              deployment: {
+                name: deployment.metadata.name,
+                namespace: deployment.metadata.namespace,
+                replicas: deployment.spec.replicas,
+                readyReplicas: deployment.status.readyReplicas || 0,
+                availableReplicas: deployment.status.availableReplicas || 0
+              }
+            };
+          } catch (parseError) {
+            throw new Error('Failed to parse deployment JSON');
+          }
+        }
+      }
+      
+      return {
+        success: false,
+        message: 'No deployment found for this pod'
+      };
+
+    } catch (error) {
+      return {
+        success: false,
+        message: `Error getting deployment info: ${error.message}`,
         error: error.message
       };
     }

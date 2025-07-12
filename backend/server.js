@@ -221,8 +221,16 @@ app.delete('/api/users/:id', (req, res) => {
 app.get('/api/database/config', (req, res) => {
   try {
     const config = dbConfigService.getPublicConfig();
-    console.log('📊 Database config requested');
-    res.json({ success: true, config });
+    console.log('📄 Sending database config (with email group):', {
+      isConfigured: config.isConfigured,
+      host: config.host,
+      emailGroupId: config.emailGroupId
+    });
+    
+    res.json({ 
+      success: true, 
+      config: config 
+    });
   } catch (error) {
     console.error('❌ Get database config error:', error);
     res.status(500).json({ 
@@ -232,12 +240,39 @@ app.get('/api/database/config', (req, res) => {
   }
 });
 
+app.get('/api/database/email-config', (req, res) => {
+  try {
+    const emailGroupId = dbConfigService.getEmailGroupForAlerts();
+    const isConfigured = dbConfigService.isEmailAlertsConfigured();
+    
+    res.json({
+      success: true,
+      emailGroupId: emailGroupId,
+      isConfigured: isConfigured
+    });
+  } catch (error) {
+    console.error('❌ Get database email config error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 app.post('/api/database/config', (req, res) => {
   try {
-    const { host, port, serviceName, username, password } = req.body;
+    const { host, port, serviceName, username, password, emailGroupId } = req.body;
 
-    console.log('💾 Updating database config:', { host, port, serviceName, username });
+    console.log('💾 Saving database config with data:', {
+      host,
+      port,
+      serviceName,
+      username,
+      emailGroupId: emailGroupId || 'none',
+      password: password ? '***' : 'empty'
+    });
 
+    // Validate required fields
     if (!host || !port || !serviceName || !username || !password) {
       return res.status(400).json({ 
         success: false,
@@ -245,12 +280,20 @@ app.post('/api/database/config', (req, res) => {
       });
     }
 
-    const configData = { host, port, serviceName, username, password };
+    // Prepare config data including email group
+    const configData = { 
+      host, 
+      port, 
+      serviceName, 
+      username, 
+      password,
+      emailGroupId: emailGroupId || null // Include email group ID
+    };
     
     const saved = dbConfigService.updateConfig(configData);
     
     if (saved) {
-      console.log('✅ Database config saved successfully');
+      console.log('✅ Database config saved successfully with email group');
       res.json({ 
         success: true, 
         message: 'Database configuration saved successfully',
@@ -754,22 +797,47 @@ app.delete('/api/email/groups/:id', (req, res) => {
 // KUBERNETES ROUTES
 app.get('/api/kubernetes/pods', async (req, res) => {
   try {
-    const namespace = req.query.namespace || 'default';
+    let namespace = req.query.namespace || 'default';
+    
+    // Validate namespace parameter
+    if (!namespace || namespace === 'null' || namespace === 'undefined') {
+      namespace = 'default';
+    }
+
+    console.log(`🔍 Getting pods for namespace: ${namespace}`);
+    
     const pods = await kubernetesService.getPods(namespace);
-    res.json({ success: true, data: pods });
+    res.json({ 
+      success: true, 
+      data: pods,
+      namespace: namespace,
+      count: pods.length
+    });
   } catch (error) {
     console.error('❌ Get pods error:', error);
-    res.status(500).json({ success: false, error: error.message });
+    res.status(500).json({ 
+      success: false, 
+      error: error.message,
+      namespace: req.query.namespace || 'default'
+    });
   }
 });
 
 app.get('/api/kubernetes/pods/all', async (req, res) => {
   try {
+    console.log('🔍 Getting all pods from all namespaces...');
     const pods = await kubernetesService.getAllPods();
-    res.json({ success: true, data: pods });
+    res.json({ 
+      success: true, 
+      data: pods,
+      count: pods.length
+    });
   } catch (error) {
     console.error('❌ Get all pods error:', error);
-    res.status(500).json({ success: false, error: error.message });
+    res.status(500).json({ 
+      success: false, 
+      error: error.message 
+    });
   }
 });
 
@@ -1484,6 +1552,15 @@ app.get('/api/database/check-privileges', async (req, res) => {
 app.post('/api/kubernetes/pods/:namespace/:podName/restart', async (req, res) => {
   try {
     const { namespace, podName } = req.params;
+    
+    // Validate parameters
+    if (!namespace || !podName) {
+      return res.status(400).json({
+        success: false,
+        error: 'Namespace and pod name are required'
+      });
+    }
+
     console.log(`🔄 Pod restart requested: ${namespace}/${podName}`);
     
     const result = await podActionsService.restartPod(namespace, podName);
@@ -1493,6 +1570,7 @@ app.post('/api/kubernetes/pods/:namespace/:podName/restart', async (req, res) =>
         success: true,
         message: result.message,
         output: result.output,
+        method: result.method,
         timestamp: result.timestamp
       });
     } else {
@@ -1516,6 +1594,15 @@ app.delete('/api/kubernetes/pods/:namespace/:podName', async (req, res) => {
   try {
     const { namespace, podName } = req.params;
     const { force } = req.query;
+    
+    // Validate parameters
+    if (!namespace || !podName) {
+      return res.status(400).json({
+        success: false,
+        error: 'Namespace and pod name are required'
+      });
+    }
+
     console.log(`🗑️ Pod deletion requested: ${namespace}/${podName}, force: ${force}`);
     
     const result = await podActionsService.deletePod(namespace, podName, force === 'true');
@@ -1525,6 +1612,7 @@ app.delete('/api/kubernetes/pods/:namespace/:podName', async (req, res) => {
         success: true,
         message: result.message,
         output: result.output,
+        method: result.method,
         timestamp: result.timestamp
       });
     } else {
@@ -1547,21 +1635,30 @@ app.delete('/api/kubernetes/pods/:namespace/:podName', async (req, res) => {
 app.get('/api/kubernetes/pods/:namespace/:podName/logs', async (req, res) => {
   try {
     const { namespace, podName } = req.params;
-    const { container, lines = 100, follow } = req.query;
+    const { container, lines = 100 } = req.query;
+    
+    // Validate parameters
+    if (!namespace || !podName) {
+      return res.status(400).json({
+        success: false,
+        error: 'Namespace and pod name are required'
+      });
+    }
+
     console.log(`📝 Pod logs requested: ${namespace}/${podName}`);
     
     const result = await podActionsService.getPodLogs(
       namespace, 
       podName, 
       container, 
-      parseInt(lines), 
-      follow === 'true'
+      parseInt(lines) || 100
     );
     
     if (result.success) {
       res.json({
         success: true,
         logs: result.logs,
+        method: result.method,
         timestamp: result.timestamp
       });
     } else {
@@ -1574,6 +1671,22 @@ app.get('/api/kubernetes/pods/:namespace/:podName/logs', async (req, res) => {
     }
   } catch (error) {
     console.error('❌ Pod logs error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Add health check route
+app.get('/api/kubernetes/health', async (req, res) => {
+  try {
+    const availability = await podActionsService.checkKubernetesAvailability();
+    res.json({
+      success: true,
+      kubernetes: availability
+    });
+  } catch (error) {
     res.status(500).json({
       success: false,
       error: error.message

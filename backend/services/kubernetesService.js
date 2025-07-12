@@ -194,7 +194,20 @@ async getPods(namespace = 'default') {
     throw new Error('Kubernetes client not configured');
   }
 
+  // Validate namespace parameter
+  if (!namespace || namespace === null || namespace === undefined) {
+    console.log('⚠️ No namespace provided, using default');
+    namespace = 'default';
+  }
+
+  // Handle 'all' namespace selection from frontend
+  if (namespace === 'all') {
+    console.log('🔍 Fetching pods from all namespaces...');
+    return this.getAllPods();
+  }
+
   try {
+    console.log(`🔍 Fetching pods from namespace: ${namespace}`);
     const response = await this.k8sApi.listNamespacedPod(namespace);
     
     // Use the same pattern as testConnection
@@ -205,7 +218,7 @@ async getPods(namespace = 'default') {
       return [];
     }
 
-    return podData.map(pod => ({
+    const pods = podData.map(pod => ({
       name: pod.metadata.name,
       namespace: pod.metadata.namespace,
       status: pod.status.phase,
@@ -219,18 +232,32 @@ async getPods(namespace = 'default') {
         ready: this.getContainerStatus(pod, container.name)
       }))
     }));
+
+    console.log(`✅ Retrieved ${pods.length} pods from namespace: ${namespace}`);
+    return pods;
+
   } catch (error) {
-    console.error('Failed to get pods:', error);
-    throw error;
+    console.error(`❌ Failed to get pods from namespace ${namespace}:`, error);
+    
+    // Handle specific errors
+    if (error.message.includes('Forbidden')) {
+      throw new Error(`Access denied to namespace '${namespace}'. Check your permissions.`);
+    } else if (error.message.includes('not found')) {
+      throw new Error(`Namespace '${namespace}' not found.`);
+    } else {
+      throw new Error(`Failed to get pods: ${error.message}`);
+    }
   }
 }
 
-  async getAllPods() {
+// Also add this improved getAllPods method
+async getAllPods() {
   if (!this.isConfigured) {
     throw new Error('Kubernetes client not configured');
   }
 
   try {
+    console.log('🔍 Fetching pods from all namespaces...');
     const response = await this.k8sApi.listPodForAllNamespaces();
     
     let podData = response.items || response.body?.items || response.data?.items;
@@ -240,7 +267,7 @@ async getPods(namespace = 'default') {
       return [];
     }
 
-    return podData.map(pod => ({
+    const pods = podData.map(pod => ({
       name: pod.metadata.name,
       namespace: pod.metadata.namespace,
       status: pod.status.phase,
@@ -250,9 +277,13 @@ async getPods(namespace = 'default') {
       node: pod.spec.nodeName,
       labels: pod.metadata.labels || {}
     }));
+
+    console.log(`✅ Retrieved ${pods.length} pods from all namespaces`);
+    return pods;
+
   } catch (error) {
-    console.error('Failed to get all pods:', error);
-    throw error;
+    console.error('❌ Failed to get all pods:', error);
+    throw new Error(`Failed to get all pods: ${error.message}`);
   }
 }
 
