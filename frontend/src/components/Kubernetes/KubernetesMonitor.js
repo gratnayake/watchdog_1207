@@ -19,7 +19,8 @@ import {
   message,
   Dropdown,
   Popconfirm,
-  Divider
+  Divider,
+  Switch 
 } from 'antd';
 import { 
   CloudOutlined, 
@@ -38,7 +39,8 @@ import {
   ThunderboltOutlined,
   MoreOutlined,
   EyeOutlined,
-  ExpandOutlined
+  ExpandOutlined,
+  StopOutlined
 } from '@ant-design/icons';
 import { kubernetesAPI } from '../../services/api';
 
@@ -54,6 +56,7 @@ const KubernetesMonitor = () => {
   const [loading, setLoading] = useState(false);
   const [selectedNamespace, setSelectedNamespace] = useState('all');
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [k8sMonitoringStatus, setK8sMonitoringStatus] = useState(null);
 
   // Pod Actions State
   const [logsModal, setLogsModal] = useState({ visible: false, pod: null, logs: '', loading: false });
@@ -78,6 +81,13 @@ const KubernetesMonitor = () => {
     };
   }, [autoRefresh, selectedNamespace]);
 
+
+  useEffect(() => {
+    loadK8sMonitoringStatus();
+    const interval = setInterval(loadK8sMonitoringStatus, 30000); // Every 30 seconds
+    return () => clearInterval(interval);
+  }, []);
+
   const loadInitialData = async () => {
     setLoading(true);
     try {
@@ -93,6 +103,76 @@ const KubernetesMonitor = () => {
       setLoading(false);
     }
   };
+
+  // Add these functions to your component
+const loadK8sMonitoringStatus = async () => {
+  try {
+    const response = await fetch('/api/kubernetes/monitoring/status');
+    const data = await response.json();
+    if (data.success) {
+      setK8sMonitoringStatus(data.status);
+    }
+  } catch (error) {
+    console.error('Failed to load Kubernetes monitoring status:', error);
+  }
+};
+
+const handleStartK8sMonitoring = async () => {
+  try {
+    const response = await fetch('/api/kubernetes/monitoring/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    });
+    const data = await response.json();
+    
+    if (data.success) {
+      message.success('Kubernetes monitoring started!');
+      setK8sMonitoringStatus(data.status);
+    } else {
+      message.error(data.error || 'Failed to start monitoring');
+    }
+  } catch (error) {
+    message.error('Failed to start Kubernetes monitoring: ' + error.message);
+  }
+};
+
+const handleStopK8sMonitoring = async () => {
+  try {
+    const response = await fetch('/api/kubernetes/monitoring/stop', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    });
+    const data = await response.json();
+    
+    if (data.success) {
+      message.success('Kubernetes monitoring stopped!');
+      setK8sMonitoringStatus(data.status);
+    } else {
+      message.error(data.error || 'Failed to stop monitoring');
+    }
+  } catch (error) {
+    message.error('Failed to stop Kubernetes monitoring: ' + error.message);
+  }
+};
+
+const handleForceK8sCheck = async () => {
+  try {
+    const response = await fetch('/api/kubernetes/monitoring/force-check', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    });
+    const data = await response.json();
+    
+    if (data.success) {
+      message.success('Manual health check completed!');
+      loadK8sMonitoringStatus();
+    } else {
+      message.error(data.error || 'Failed to perform check');
+    }
+  } catch (error) {
+    message.error('Failed to perform check: ' + error.message);
+  }
+};
 
   const loadKubernetesData = async () => {
     try {
@@ -347,6 +427,59 @@ const KubernetesMonitor = () => {
 
     return { items };
   };
+
+  const MonitoringControlPanel = () => (
+  <Card title="🚨 Kubernetes Alert Monitoring" style={{ marginBottom: 24 }}>
+    <Space direction="vertical" style={{ width: '100%' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div>
+          <Text strong>Pod Failure Monitoring: </Text>
+          <Badge 
+            status={k8sMonitoringStatus?.isMonitoring ? 'processing' : 'error'} 
+            text={k8sMonitoringStatus?.isMonitoring ? 'ACTIVE' : 'STOPPED'} 
+          />
+        </div>
+        
+        <Space>
+          {k8sMonitoringStatus?.isMonitoring ? (
+            <Button 
+              type="danger" 
+              icon={<StopOutlined />} 
+              onClick={handleStopK8sMonitoring}
+            >
+              Stop Monitoring
+            </Button>
+          ) : (
+            <Button 
+              type="primary" 
+              icon={<PlayCircleOutlined />} 
+              onClick={handleStartK8sMonitoring}
+            >
+              Start Monitoring
+            </Button>
+          )}
+          
+          <Button 
+            icon={<ReloadOutlined />} 
+            onClick={handleForceK8sCheck}
+          >
+            Force Check
+          </Button>
+        </Space>
+      </div>
+      
+      {k8sMonitoringStatus && (
+        <div style={{ fontSize: '12px', color: '#666' }}>
+          <Text type="secondary">
+            Monitoring {k8sMonitoringStatus.podCount} pods • 
+            Last check: {k8sMonitoringStatus.lastCheck} • 
+            Checks every 2 minutes for failures
+          </Text>
+        </div>
+      )}
+    </Space>
+  </Card>
+);
 
   const podColumns = [
     {

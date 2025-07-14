@@ -13,6 +13,7 @@ const kubernetesConfigService = require('./services/kubernetesConfigService');
 const thresholdService = require('./services/thresholdService');
 const databaseOperationsService = require('./services/databaseOperationsService');
 const podActionsService = require('./services/podActionsService');
+const kubernetesMonitoringService = require('./services/kubernetesMonitoringService');
 
 const { exec } = require('child_process');
 const util = require('util');
@@ -868,6 +869,96 @@ app.get('/api/kubernetes/cluster-info', async (req, res) => {
   } catch (error) {
     console.error('❌ Get cluster info error:', error);
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+
+// Kubernetes monitoring endpoints
+app.get('/api/kubernetes/monitoring/status', (req, res) => {
+  try {
+    const status = kubernetesMonitoringService.getStatus();
+    res.json({
+      success: true,
+      status: status,
+      timestamp: new Date()
+    });
+  } catch (error) {
+    console.error('❌ Kubernetes monitoring status error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+app.post('/api/kubernetes/monitoring/start', (req, res) => {
+  try {
+    const started = kubernetesMonitoringService.startMonitoring();
+    
+    if (started) {
+      res.json({
+        success: true,
+        message: 'Kubernetes monitoring started successfully',
+        status: kubernetesMonitoringService.getStatus()
+      });
+    } else {
+      res.status(400).json({
+        success: false,
+        error: 'Failed to start Kubernetes monitoring'
+      });
+    }
+  } catch (error) {
+    console.error('❌ Start Kubernetes monitoring error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+app.post('/api/kubernetes/monitoring/stop', (req, res) => {
+  try {
+    const stopped = kubernetesMonitoringService.stopMonitoring();
+    
+    if (stopped) {
+      res.json({
+        success: true,
+        message: 'Kubernetes monitoring stopped successfully',
+        status: kubernetesMonitoringService.getStatus()
+      });
+    } else {
+      res.status(400).json({
+        success: false,
+        error: 'Failed to stop Kubernetes monitoring'
+      });
+    }
+  } catch (error) {
+    console.error('❌ Stop Kubernetes monitoring error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+app.post('/api/kubernetes/monitoring/force-check', async (req, res) => {
+  try {
+    console.log('🔍 Manual Kubernetes health check requested');
+    
+    await kubernetesMonitoringService.checkPodHealth();
+    await kubernetesMonitoringService.checkNodeHealth();
+    
+    res.json({
+      success: true,
+      message: 'Kubernetes health check completed',
+      timestamp: new Date()
+    });
+  } catch (error) {
+    console.error('❌ Manual Kubernetes check error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
   }
 });
 
@@ -1956,6 +2047,24 @@ setTimeout(() => {
     console.log('⚠️ Database not configured - monitoring not started');
   }
 }, 2000); // Wait 2 seconds for services to initialize
+
+
+// Auto-start Kubernetes monitoring if configured
+setTimeout(() => {
+  const kubernetesConfig = kubernetesConfigService.getConfig();
+  if (kubernetesConfig.isConfigured) {
+    console.log('☸️ Auto-starting Kubernetes monitoring...');
+    const started = kubernetesMonitoringService.startMonitoring();
+    if (started) {
+      console.log('✅ Kubernetes monitoring started automatically');
+    } else {
+      console.log('❌ Failed to auto-start Kubernetes monitoring');
+    }
+  } else {
+    console.log('⚠️ Kubernetes not configured - monitoring not started');
+  }
+}, 4000); // Wait 4 seconds for services to initialize
+
 
 // Start server
 app.listen(PORT, () => {
