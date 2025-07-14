@@ -1059,13 +1059,16 @@ app.get('/api/kubernetes/config', (req, res) => {
 
 app.post('/api/kubernetes/config', (req, res) => {
   try {
-    const { kubeconfigPath } = req.body;
-    
-    console.log('📝 Received kubeconfigPath:', kubeconfigPath);
-    
-    // Allow empty path to clear configuration
+    const { kubeconfigPath, emailGroupId } = req.body;
+
+    console.log('💾 Saving Kubernetes config with data:', {
+      kubeconfigPath: kubeconfigPath || 'empty',
+      emailGroupId: emailGroupId || 'none'
+    });
+
+    // Validate kubeconfig path if provided and not empty
     if (kubeconfigPath && kubeconfigPath.trim() !== '') {
-      console.log('🔍 Validating non-empty path...');
+      console.log('🔍 Validating kubeconfig path...');
       const validation = kubernetesConfigService.validateConfigPath(kubeconfigPath);
       if (!validation.valid) {
         console.log('❌ Validation failed:', validation.error);
@@ -1078,23 +1081,56 @@ app.post('/api/kubernetes/config', (req, res) => {
       console.log('✅ Empty path - clearing configuration');
     }
 
-    const configData = { kubeconfigPath: kubeconfigPath || '' };
+    // Prepare config data including email group
+    const configData = { 
+      kubeconfigPath: kubeconfigPath || '',
+      emailGroupId: emailGroupId || null // Include email group ID
+    };
+    
     const saved = kubernetesConfigService.updateConfig(configData);
     
     if (saved) {
-      console.log('✅ Config saved successfully');
+      console.log('✅ Kubernetes config saved successfully with email group');
+      
+      // Reinitialize Kubernetes service with new config
+      kubernetesService.refreshConfiguration();
+      
       res.json({ 
         success: true, 
         message: 'Kubernetes configuration saved successfully',
         config: kubernetesConfigService.getPublicConfig()
       });
     } else {
-      console.log('❌ Failed to save config');
-      res.status(500).json({ success: false, error: 'Failed to save Kubernetes configuration' });
+      res.status(500).json({ 
+        success: false,
+        error: 'Failed to save Kubernetes configuration' 
+      });
     }
   } catch (error) {
-    console.error('❌ Route error:', error);
-    res.status(500).json({ success: false, error: error.message });
+    console.error('❌ Save Kubernetes config error:', error);
+    res.status(500).json({ 
+      success: false,
+      error: error.message 
+    });
+  }
+});
+
+app.get('/api/kubernetes/email-config', (req, res) => {
+  try {
+    const emailGroupId = kubernetesConfigService.getEmailGroupForAlerts();
+    const isConfigured = kubernetesConfigService.isEmailAlertsConfigured();
+    
+    res.json({
+      success: true,
+      emailGroupId: emailGroupId,
+      isConfigured: isConfigured
+    });
+  } catch (error) {
+    console.error('❌ Get Kubernetes email config error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
   }
 });
 
