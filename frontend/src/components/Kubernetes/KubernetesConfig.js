@@ -1,3 +1,6 @@
+// frontend/src/components/Kubernetes/KubernetesConfig.js
+// Complete version with email groups added to existing functionality
+
 import React, { useState, useEffect } from 'react';
 import { 
   Card, 
@@ -10,30 +13,35 @@ import {
   Col, 
   Typography,
   message,
-  Divider
+  Divider,
+  Select
 } from 'antd';
 import { 
   CloudOutlined, 
   SaveOutlined, 
   CheckCircleOutlined,
   FolderOpenOutlined,
-  SettingOutlined
+  SettingOutlined,
+  TeamOutlined
 } from '@ant-design/icons';
 import { kubernetesAPI } from '../../services/api';
 import { useMode } from '../../contexts/ModeContext';
 
 const { Title, Text } = Typography;
+const { Option } = Select;
 
 const KubernetesConfig = () => {
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
   const [testLoading, setTestLoading] = useState(false);
   const [config, setConfig] = useState(null);
+  const [emailGroups, setEmailGroups] = useState([]);
   const [alert, setAlert] = useState({ type: '', message: '', visible: false });
   const { refreshMode } = useMode();
 
   useEffect(() => {
     loadConfig();
+    loadEmailGroups();
   }, []);
 
   const loadConfig = async () => {
@@ -44,7 +52,8 @@ const KubernetesConfig = () => {
       if (response.success) {
         setConfig(response.config);
         form.setFieldsValue({
-          kubeconfigPath: response.config.kubeconfigPath
+          kubeconfigPath: response.config.kubeconfigPath,
+          emailGroupId: response.config.emailGroupId
         });
       }
     } catch (error) {
@@ -52,6 +61,18 @@ const KubernetesConfig = () => {
       showAlert('error', 'Failed to load Kubernetes configuration');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadEmailGroups = async () => {
+    try {
+      const response = await fetch('/api/email/groups');
+      const data = await response.json();
+      if (data.success) {
+        setEmailGroups(data.data);
+      }
+    } catch (error) {
+      console.error('Failed to load email groups:', error);
     }
   };
 
@@ -67,10 +88,20 @@ const KubernetesConfig = () => {
       const values = await form.validateFields();
       setLoading(true);
       
-      const response = await kubernetesAPI.saveConfig(values);
+      // Use the updated saveConfig method that includes emailGroupId
+      const response = await fetch('/api/kubernetes/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          kubeconfigPath: values.kubeconfigPath,
+          emailGroupId: values.emailGroupId
+        })
+      });
+
+      const data = await response.json();
       
-      if (response.success) {
-        setConfig(response.config);
+      if (data.success) {
+        setConfig(data.config);
         showAlert('success', 'Kubernetes configuration saved successfully!');
         message.success('Configuration saved!');
         
@@ -80,7 +111,7 @@ const KubernetesConfig = () => {
           loadConfig();
         }, 1000);
       } else {
-        showAlert('error', response.error || 'Failed to save configuration');
+        showAlert('error', data.error || 'Failed to save configuration');
       }
     } catch (error) {
       if (error.errorFields) {
@@ -96,36 +127,45 @@ const KubernetesConfig = () => {
     }
   };
 
-    const handleClearConfig = async () => {
-  try {
-    setLoading(true);
-    
-    console.log('🔍 Clearing config - sending empty kubeconfigPath');
-    
-    // Send empty config directly
-    const response = await kubernetesAPI.saveConfig({ kubeconfigPath: '' });
-    
-    console.log('✅ Clear response:', response);
-    
-    if (response.success) {
-      setConfig({ kubeconfigPath: '', isConfigured: false });
-      form.setFieldsValue({ kubeconfigPath: '' });
-      showAlert('success', 'Kubernetes configuration cleared successfully!');
-      message.success('Configuration cleared!');
-      await refreshMode();
+  const handleClearConfig = async () => {
+    try {
+      setLoading(true);
+      
+      console.log('🔍 Clearing config - sending empty kubeconfigPath');
+      
+      // Send empty config directly
+      const response = await fetch('/api/kubernetes/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          kubeconfigPath: '',
+          emailGroupId: null
+        })
+      });
+
+      const data = await response.json();
+      
+      console.log('✅ Clear response:', data);
+      
+      if (data.success) {
+        setConfig({ kubeconfigPath: '', emailGroupId: null, isConfigured: false });
+        form.setFieldsValue({ kubeconfigPath: '', emailGroupId: null });
+        showAlert('success', 'Kubernetes configuration cleared successfully!');
+        message.success('Configuration cleared!');
+        await refreshMode();
+      }
+    } catch (error) {
+      console.error('❌ Clear config error:', error);
+      console.error('❌ Error response:', error.response?.data);
+      showAlert('error', 'Failed to clear configuration: ' + (error.response?.data?.error || error.message));
+    } finally {
+      setLoading(false);
     }
-  } catch (error) {
-    console.error('❌ Clear config error:', error);
-    console.error('❌ Error response:', error.response?.data);
-    showAlert('error', 'Failed to clear configuration: ' + (error.response?.data?.error || error.message));
-  } finally {
-    setLoading(false);
-  }
-};
+  };
 
   const handleTestConfig = async () => {
     try {
-      const values = await form.validateFields();
+      const values = await form.validateFields(['kubeconfigPath']); // Only validate kubeconfig for testing
       setTestLoading(true);
       
       const response = await kubernetesAPI.testConfig(values);
@@ -175,6 +215,8 @@ const KubernetesConfig = () => {
             form={form}
             layout="vertical"
           >
+            <Divider orientation="left">Cluster Connection</Divider>
+
             <Form.Item
               name="kubeconfigPath"
               label="Kubeconfig File Path"
@@ -207,6 +249,51 @@ const KubernetesConfig = () => {
               style={{ marginBottom: 24 }}
             />
 
+            <Divider orientation="left">Alert Configuration</Divider>
+
+            <Form.Item
+              name="emailGroupId"
+              label="Pod Failure Alert Group"
+              extra="Select which email group should receive Kubernetes pod failure alerts"
+            >
+              <Select 
+                placeholder="Select email group for pod alerts (optional)"
+                allowClear
+                size="large"
+                loading={emailGroups.length === 0}
+              >
+                <Option value={null}>
+                  <Space>
+                    🔕 
+                    <span>No email alerts</span>
+                  </Space>
+                </Option>
+                {emailGroups.map(group => (
+                  <Option key={group.id} value={group.id}>
+                    <Space>
+                      <TeamOutlined />
+                      <span>{group.name}</span>
+                      <span style={{ color: '#8c8c8c' }}>
+                        ({group.emails.length} recipients)
+                      </span>
+                    </Space>
+                  </Option>
+                ))}
+              </Select>
+            </Form.Item>
+
+            {emailGroups.length === 0 && (
+              <Alert
+                message="No Email Groups Available"
+                description="Create email groups in Email Management to enable pod failure alerts."
+                type="info"
+                showIcon
+                style={{ marginBottom: 16 }}
+              />
+            )}
+
+            <Divider />
+
             <Form.Item style={{ marginBottom: 0 }}>
               <Space size="large">
                 <Button 
@@ -219,12 +306,12 @@ const KubernetesConfig = () => {
                   Test Connection
                 </Button>
                 <Button 
-                    danger
-                    onClick={handleClearConfig}
-                    loading={loading}
-                    size="large"
+                  danger
+                  onClick={handleClearConfig}
+                  loading={loading}
+                  size="large"
                 >
-                    Clear Config
+                  Clear Config
                 </Button>
                 <Button 
                   type="primary"
@@ -259,6 +346,17 @@ const KubernetesConfig = () => {
                     <br />
                     <Text code style={{ fontSize: '11px', wordBreak: 'break-all' }}>
                       {config.kubeconfigPath}
+                    </Text>
+                  </div>
+
+                  <div style={{ marginBottom: 12 }}>
+                    <Text strong>Pod Alerts:</Text>
+                    <br />
+                    <Text style={{ fontSize: '12px' }}>
+                      {config.emailGroupId ? 
+                        `📧 Enabled (Group: ${emailGroups.find(g => g.id === config.emailGroupId)?.name || config.emailGroupId})` : 
+                        '🔕 Disabled'
+                      }
                     </Text>
                   </div>
 
@@ -318,6 +416,7 @@ const KubernetesConfig = () => {
             <li>Network access to Kubernetes cluster</li>
             <li>Proper authentication credentials</li>
             <li>Read permissions on config file</li>
+            <li>Email group configured for alerts (optional)</li>
           </ul>
         </Card>
       </Col>
