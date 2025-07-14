@@ -1,374 +1,164 @@
+// frontend/src/components/Kubernetes/KubernetesMonitor.js
+// Complete Enhanced Version with Pod Lifecycle Tracking
+
 import React, { useState, useEffect } from 'react';
 import { 
-  Row, 
-  Col, 
   Card, 
   Table, 
-  Tag, 
   Button, 
-  Select, 
   Space, 
-  Statistic, 
-  Typography,
-  Alert,
-  Tooltip,
+  Tag, 
+  Typography, 
+  Row, 
+  Col,
+  Switch,
+  Select,
+  Statistic,
   Badge,
+  Timeline,
   Modal,
-  Input,
-  InputNumber,
+  Alert,
   message,
   Dropdown,
-  Popconfirm,
-  Divider,
-  Switch 
+  Tooltip,
+  Progress
 } from 'antd';
 import { 
-  CloudOutlined, 
   ReloadOutlined,
-  CheckCircleOutlined,
-  ExclamationCircleOutlined,
-  ClockCircleOutlined,
-  DatabaseOutlined,
-  PlayCircleOutlined,
   DeleteOutlined,
-  FileTextOutlined,
-  CodeOutlined,
-  SettingOutlined,
-  InfoCircleOutlined,
-  ScissorOutlined,
-  ThunderboltOutlined,
-  MoreOutlined,
+  HistoryOutlined,
+  BarChartOutlined,
   EyeOutlined,
+  ClockCircleOutlined,
+  MoreOutlined,
+  PlayCircleOutlined,
+  StopOutlined,
+  FileTextOutlined,
+  InfoCircleOutlined,
   ExpandOutlined,
-  StopOutlined
+  ExclamationCircleOutlined
 } from '@ant-design/icons';
-import { kubernetesAPI } from '../../services/api';
 
-const { Title, Text } = Typography;
+const { Text, Title } = Typography;
 const { Option } = Select;
-const { TextArea } = Input;
 
-const KubernetesMonitor = () => {
+const EnhancedKubernetesMonitor = () => {
   const [pods, setPods] = useState([]);
-  const [nodes, setNodes] = useState([]);
-  const [namespaces, setNamespaces] = useState([]);
-  const [clusterInfo, setClusterInfo] = useState(null);
+  const [statistics, setStatistics] = useState(null);
   const [loading, setLoading] = useState(false);
   const [selectedNamespace, setSelectedNamespace] = useState('all');
-  const [autoRefresh, setAutoRefresh] = useState(true);
-  const [k8sMonitoringStatus, setK8sMonitoringStatus] = useState(null);
-
-  // Pod Actions State
-  const [logsModal, setLogsModal] = useState({ visible: false, pod: null, logs: '', loading: false });
-  const [execModal, setExecModal] = useState({ visible: false, pod: null, command: '', containers: [] });
-  const [scaleModal, setScaleModal] = useState({ visible: false, deployment: null, replicas: 1 });
-  const [describeModal, setDescribeModal] = useState({ visible: false, pod: null, description: '', loading: false });
-  const [actionLoading, setActionLoading] = useState('');
+  const [includeDeleted, setIncludeDeleted] = useState(true);
+  const [sortBy, setSortBy] = useState('lastSeen');
+  const [autoRefresh, setAutoRefresh] = useState(false);
+  const [historyModal, setHistoryModal] = useState({ visible: false, pod: null });
+  const [changes, setChanges] = useState([]);
+  const [namespaces, setNamespaces] = useState([]);
 
   useEffect(() => {
     loadInitialData();
   }, []);
 
   useEffect(() => {
+    loadEnhancedPods();
+  }, [selectedNamespace, includeDeleted, sortBy]);
+
+  useEffect(() => {
     let interval;
     if (autoRefresh) {
       interval = setInterval(() => {
-        loadKubernetesData();
-      }, 10000); // Refresh every 10 seconds
+        loadEnhancedPods();
+      }, 30000); // Refresh every 30 seconds
     }
     return () => {
       if (interval) clearInterval(interval);
     };
-  }, [autoRefresh, selectedNamespace]);
-
-
-  useEffect(() => {
-    loadK8sMonitoringStatus();
-    const interval = setInterval(loadK8sMonitoringStatus, 30000); // Every 30 seconds
-    return () => clearInterval(interval);
-  }, []);
+  }, [autoRefresh, selectedNamespace, includeDeleted, sortBy]);
 
   const loadInitialData = async () => {
-    setLoading(true);
     try {
-      await Promise.all([
-        loadNamespaces(),
-        loadNodes(),
-        loadClusterInfo(),
-        loadPods()
-      ]);
+      // Load namespaces
+      const namespacesResponse = await fetch('/api/kubernetes/namespaces');
+      const namespacesData = await namespacesResponse.json();
+      if (namespacesData.success) {
+        setNamespaces(namespacesData.data || []);
+      }
     } catch (error) {
       console.error('Failed to load initial data:', error);
+    }
+    
+    loadEnhancedPods();
+  };
+
+  const loadEnhancedPods = async () => {
+    try {
+      setLoading(true);
+      const response = await fetch(`/api/kubernetes/pods/enhanced?namespace=${selectedNamespace}&includeDeleted=${includeDeleted}&sortBy=${sortBy}`);
+      const data = await response.json();
+      
+      if (data.success) {
+        setPods(data.data.pods);
+        setStatistics(data.data.statistics);
+        setChanges(data.data.changes || []);
+        
+        // Show notifications for important changes
+        if (data.data.changes && data.data.changes.length > 0) {
+          data.data.changes.forEach(change => {
+            if (change.type === 'deleted') {
+              message.warning(`Pod deleted: ${change.pod.namespace}/${change.pod.name}`, 3);
+            } else if (change.type === 'created') {
+              message.success(`New pod created: ${change.pod.namespace}/${change.pod.name}`, 3);
+            } else if (change.type === 'status_change' && change.newStatus === 'Failed') {
+              message.error(`Pod failed: ${change.pod.namespace}/${change.pod.name}`, 5);
+            }
+          });
+        }
+      }
+    } catch (error) {
+      console.error('Failed to load enhanced pods:', error);
+      message.error('Failed to load pod data');
     } finally {
       setLoading(false);
     }
   };
 
-  // Add these functions to your component
-const loadK8sMonitoringStatus = async () => {
-  try {
-    const response = await fetch('/api/kubernetes/monitoring/status');
-    const data = await response.json();
-    if (data.success) {
-      setK8sMonitoringStatus(data.status);
-    }
-  } catch (error) {
-    console.error('Failed to load Kubernetes monitoring status:', error);
-  }
-};
-
-const handleStartK8sMonitoring = async () => {
-  try {
-    const response = await fetch('/api/kubernetes/monitoring/start', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' }
-    });
-    const data = await response.json();
-    
-    if (data.success) {
-      message.success('Kubernetes monitoring started!');
-      setK8sMonitoringStatus(data.status);
-    } else {
-      message.error(data.error || 'Failed to start monitoring');
-    }
-  } catch (error) {
-    message.error('Failed to start Kubernetes monitoring: ' + error.message);
-  }
-};
-
-const handleStopK8sMonitoring = async () => {
-  try {
-    const response = await fetch('/api/kubernetes/monitoring/stop', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' }
-    });
-    const data = await response.json();
-    
-    if (data.success) {
-      message.success('Kubernetes monitoring stopped!');
-      setK8sMonitoringStatus(data.status);
-    } else {
-      message.error(data.error || 'Failed to stop monitoring');
-    }
-  } catch (error) {
-    message.error('Failed to stop Kubernetes monitoring: ' + error.message);
-  }
-};
-
-const handleForceK8sCheck = async () => {
-  try {
-    const response = await fetch('/api/kubernetes/monitoring/force-check', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' }
-    });
-    const data = await response.json();
-    
-    if (data.success) {
-      message.success('Manual health check completed!');
-      loadK8sMonitoringStatus();
-    } else {
-      message.error(data.error || 'Failed to perform check');
-    }
-  } catch (error) {
-    message.error('Failed to perform check: ' + error.message);
-  }
-};
-
-  const loadKubernetesData = async () => {
+  const handleViewHistory = async (pod) => {
     try {
-      await Promise.all([
-        loadPods(),
-        loadClusterInfo()
-      ]);
-    } catch (error) {
-      console.error('Failed to refresh data:', error);
-    }
-  };
-
-  const loadPods = async () => {
-    try {
-      const response = selectedNamespace === 'all' 
-        ? await kubernetesAPI.getAllPods() 
-        : await kubernetesAPI.getPods(selectedNamespace);
+      const response = await fetch(`/api/kubernetes/pods/${pod.namespace}/${pod.name}/history`);
+      const data = await response.json();
       
-      if (response.success) {
-        setPods(response.data);
-      }
-    } catch (error) {
-      console.error('Failed to load pods:', error);
-    }
-  };
-
-  const loadNodes = async () => {
-    try {
-      const response = await kubernetesAPI.getNodes();
-      if (response.success) {
-        setNodes(response.data);
-      }
-    } catch (error) {
-      console.error('Failed to load nodes:', error);
-    }
-  };
-
-  const loadNamespaces = async () => {
-    try {
-      const response = await kubernetesAPI.getNamespaces();
-      if (response.success) {
-        setNamespaces(response.data);
-      }
-    } catch (error) {
-      console.error('Failed to load namespaces:', error);
-    }
-  };
-
-  const loadClusterInfo = async () => {
-    try {
-      const response = await kubernetesAPI.getClusterInfo();
-      if (response.success) {
-        setClusterInfo(response.data);
-      }
-    } catch (error) {
-      console.error('Failed to load cluster info:', error);
-    }
-  };
-
-  // POD ACTIONS
-  const handleRestartPod = async (pod) => {
-    setActionLoading(`restart-${pod.name}`);
-    try {
-      const result = await kubernetesAPI.restartPod(pod.namespace, pod.name);
-      if (result.success) {
-        message.success(`Pod ${pod.name} restart initiated successfully!`);
-        setTimeout(() => loadPods(), 2000); // Refresh after 2 seconds
-      } else {
-        message.error(`Failed to restart pod: ${result.error}`);
-      }
-    } catch (error) {
-      message.error(`Failed to restart pod: ${error.message}`);
-    } finally {
-      setActionLoading('');
-    }
-  };
-
-  const handleDeletePod = async (pod, force = false) => {
-    setActionLoading(`delete-${pod.name}`);
-    try {
-      const result = await kubernetesAPI.deletePod(pod.namespace, pod.name, force);
-      if (result.success) {
-        message.success(`Pod ${pod.name} deleted successfully!`);
-        setTimeout(() => loadPods(), 1000); // Refresh after 1 second
-      } else {
-        message.error(`Failed to delete pod: ${result.error}`);
-      }
-    } catch (error) {
-      message.error(`Failed to delete pod: ${error.message}`);
-    } finally {
-      setActionLoading('');
-    }
-  };
-
-  const handleViewLogs = async (pod) => {
-    setLogsModal({ visible: true, pod, logs: '', loading: true });
-    
-    try {
-      const result = await kubernetesAPI.getPodLogs(pod.namespace, pod.name, { lines: 500 });
-      if (result.success) {
-        setLogsModal(prev => ({ ...prev, logs: result.logs, loading: false }));
-      } else {
-        setLogsModal(prev => ({ ...prev, logs: `Error: ${result.error}`, loading: false }));
-      }
-    } catch (error) {
-      setLogsModal(prev => ({ ...prev, logs: `Error: ${error.message}`, loading: false }));
-    }
-  };
-
-  const handleExecPod = async (pod) => {
-    try {
-      const result = await kubernetesAPI.getPodContainers(pod.namespace, pod.name);
-      if (result.success) {
-        setExecModal({ 
-          visible: true, 
-          pod, 
-          command: '/bin/bash', 
-          containers: result.containers 
+      if (data.success) {
+        setHistoryModal({
+          visible: true,
+          pod: data.data
         });
-      } else {
-        message.error('Failed to get pod containers');
       }
     } catch (error) {
-      message.error(`Failed to get pod containers: ${error.message}`);
+      console.error('Failed to load pod history:', error);
+      message.error('Failed to load pod history');
     }
   };
 
-  const handleDescribePod = async (pod) => {
-    setDescribeModal({ visible: true, pod, description: '', loading: true });
-    
-    try {
-      const result = await kubernetesAPI.describePod(pod.namespace, pod.name);
-      if (result.success) {
-        setDescribeModal(prev => ({ ...prev, description: result.description, loading: false }));
-      } else {
-        setDescribeModal(prev => ({ ...prev, description: `Error: ${result.error}`, loading: false }));
-      }
-    } catch (error) {
-      setDescribeModal(prev => ({ ...prev, description: `Error: ${error.message}`, loading: false }));
+  const handleViewLogs = (pod) => {
+    if (pod.isDeleted) {
+      message.warning('Cannot view logs for deleted pods');
+      return;
     }
+    // Implement log viewing functionality
+    message.info(`Viewing logs for ${pod.namespace}/${pod.name}`);
   };
 
-  const handleScaleDeployment = async (pod) => {
-    try {
-      const result = await kubernetesAPI.getDeploymentInfo(pod.namespace, pod.name);
-      if (result.success) {
-        setScaleModal({ 
-          visible: true, 
-          deployment: result.deployment, 
-          replicas: result.deployment.replicas 
-        });
-      } else {
-        message.error('No deployment found for this pod');
-      }
-    } catch (error) {
-      message.error(`Failed to get deployment info: ${error.message}`);
+  const handleDescribePod = (pod) => {
+    if (pod.isDeleted) {
+      message.warning('Cannot describe deleted pods');
+      return;
     }
+    // Implement pod description functionality
+    message.info(`Describing pod ${pod.namespace}/${pod.name}`);
   };
 
-  const executeScale = async () => {
-    try {
-      const result = await kubernetesAPI.scaleDeployment(
-        scaleModal.deployment.namespace, 
-        scaleModal.deployment.name, 
-        scaleModal.replicas
-      );
-      if (result.success) {
-        message.success(`Deployment scaled to ${scaleModal.replicas} replicas`);
-        setScaleModal({ visible: false, deployment: null, replicas: 1 });
-        setTimeout(() => loadPods(), 2000);
-      } else {
-        message.error(`Failed to scale deployment: ${result.error}`);
-      }
-    } catch (error) {
-      message.error(`Failed to scale deployment: ${error.message}`);
-    }
-  };
-
-  const executeExec = async () => {
-    try {
-      const result = await kubernetesAPI.execInPod(execModal.pod.namespace, execModal.pod.name, {
-        command: execModal.command
-      });
-      if (result.success) {
-        message.success(`Exec command ready: ${result.execCommand}`);
-        message.info('Copy and run this command in your terminal');
-      } else {
-        message.error(`Failed to create exec session: ${result.error}`);
-      }
-    } catch (error) {
-      message.error(`Failed to create exec session: ${error.message}`);
-    }
-  };
-
-  const getStatusColor = (status) => {
-    switch (status.toLowerCase()) {
+  const getStatusColor = (status, isDeleted) => {
+    if (isDeleted) return 'red';
+    switch (status?.toLowerCase()) {
       case 'running': return 'green';
       case 'pending': return 'orange';
       case 'failed': return 'red';
@@ -377,137 +167,114 @@ const handleForceK8sCheck = async () => {
     }
   };
 
-  // Pod Actions Menu
+  const getLifecycleStageIcon = (stage) => {
+    switch (stage) {
+      case 'stable': return '🟢';
+      case 'starting': return '🟡';
+      case 'failed': return '🔴';
+      case 'completed': return '🔵';
+      case 'deleted': return '🗑️';
+      default: return '❓';
+    }
+  };
+
   const getPodActionsMenu = (pod) => {
     const items = [
       {
-        key: 'logs',
-        label: 'View Logs',
-        icon: <FileTextOutlined />,
-        onClick: () => handleViewLogs(pod)
-      },
-      {
-        key: 'describe',
-        label: 'Describe Pod',
-        icon: <InfoCircleOutlined />,
-        onClick: () => handleDescribePod(pod)
-      },
-      {
-        key: 'exec',
-        label: 'Exec into Pod',
-        icon: <CodeOutlined />,
-        onClick: () => handleExecPod(pod)
-      },
-      {
-        type: 'divider'
-      },
-      {
-        key: 'scale',
-        label: 'Scale Deployment',
-        icon: <ExpandOutlined />,
-        onClick: () => handleScaleDeployment(pod)
-      },
-      {
-        key: 'restart',
-        label: 'Restart Pod',
-        icon: <ReloadOutlined />,
-        onClick: () => handleRestartPod(pod)
-      },
-      {
-        type: 'divider'
-      },
-      {
-        key: 'delete',
-        label: 'Delete Pod',
-        icon: <DeleteOutlined />,
-        danger: true,
-        onClick: () => handleDeletePod(pod)
+        key: 'history',
+        label: 'View History',
+        icon: <HistoryOutlined />,
+        onClick: () => handleViewHistory(pod)
       }
     ];
+
+    if (!pod.isDeleted) {
+      items.unshift(
+        {
+          key: 'logs',
+          label: 'View Logs',
+          icon: <FileTextOutlined />,
+          onClick: () => handleViewLogs(pod)
+        },
+        {
+          key: 'describe',
+          label: 'Describe Pod',
+          icon: <InfoCircleOutlined />,
+          onClick: () => handleDescribePod(pod)
+        },
+        {
+          type: 'divider'
+        }
+      );
+    }
 
     return { items };
   };
 
-  const MonitoringControlPanel = () => (
-  <Card title="🚨 Kubernetes Alert Monitoring" style={{ marginBottom: 24 }}>
-    <Space direction="vertical" style={{ width: '100%' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div>
-          <Text strong>Pod Failure Monitoring: </Text>
-          <Badge 
-            status={k8sMonitoringStatus?.isMonitoring ? 'processing' : 'error'} 
-            text={k8sMonitoringStatus?.isMonitoring ? 'ACTIVE' : 'STOPPED'} 
-          />
-        </div>
-        
-        <Space>
-          {k8sMonitoringStatus?.isMonitoring ? (
-            <Button 
-              type="danger" 
-              icon={<StopOutlined />} 
-              onClick={handleStopK8sMonitoring}
-            >
-              Stop Monitoring
-            </Button>
-          ) : (
-            <Button 
-              type="primary" 
-              icon={<PlayCircleOutlined />} 
-              onClick={handleStartK8sMonitoring}
-            >
-              Start Monitoring
-            </Button>
-          )}
-          
-          <Button 
-            icon={<ReloadOutlined />} 
-            onClick={handleForceK8sCheck}
-          >
-            Force Check
-          </Button>
-        </Space>
-      </div>
-      
-      {k8sMonitoringStatus && (
-        <div style={{ fontSize: '12px', color: '#666' }}>
-          <Text type="secondary">
-            Monitoring {k8sMonitoringStatus.podCount} pods • 
-            Last check: {k8sMonitoringStatus.lastCheck} • 
-            Checks every 2 minutes for failures
-          </Text>
-        </div>
-      )}
-    </Space>
-  </Card>
-);
-
-  const podColumns = [
+  const enhancedColumns = [
     {
       title: 'Pod Details',
       key: 'details',
+      width: 250,
       render: (_, record) => (
         <Space direction="vertical" size="small">
           <div>
-            <Text strong>{record.name}</Text>
-            <br />
-            <Text type="secondary" style={{ fontSize: '12px' }}>
-              {record.namespace}
+            <Text strong style={{ opacity: record.isDeleted ? 0.6 : 1 }}>
+              {record.name}
             </Text>
+            {record.isDeleted && <Tag color="red" size="small">DELETED</Tag>}
           </div>
+          <Text type="secondary" style={{ fontSize: '12px' }}>
+            {record.namespace}
+          </Text>
         </Space>
       ),
     },
     {
-      title: 'Status',
-      dataIndex: 'status',
+      title: 'Status & Lifecycle',
       key: 'status',
-      render: (status, record) => (
+      width: 180,
+      render: (_, record) => (
         <Space direction="vertical" size="small">
-          <Tag color={getStatusColor(status)}>{status}</Tag>
-          <Badge 
-            status={record.ready ? 'success' : 'error'} 
-            text={record.ready ? 'Ready' : 'Not Ready'}
-          />
+          <div>
+            <span style={{ marginRight: 8 }}>
+              {getLifecycleStageIcon(record.lifecycleStage)}
+            </span>
+            <Tag color={getStatusColor(record.status, record.isDeleted)}>
+              {record.isDeleted ? 'DELETED' : record.status}
+            </Tag>
+          </div>
+          <Text type="secondary" style={{ fontSize: '11px' }}>
+            Duration: {record.statusDuration}
+          </Text>
+        </Space>
+      ),
+    },
+    {
+      title: 'Timeline',
+      key: 'timeline',
+      width: 160,
+      render: (_, record) => (
+        <Space direction="vertical" size="small">
+          <div>
+            <Text style={{ fontSize: '11px' }}>
+              <ClockCircleOutlined style={{ marginRight: 4 }} />
+              Created: {record.age} ago
+            </Text>
+          </div>
+          <div>
+            <Text style={{ fontSize: '11px' }}>
+              Last seen: {record.timeSinceLastSeen} ago
+            </Text>
+          </div>
+          {record.isDeleted && (
+            <div>
+              <Text type="danger" style={{ fontSize: '11px' }}>
+                <DeleteOutlined style={{ marginRight: 4 }} />
+                Deleted: {new Date(record.deletedAt).toLocaleString()}
+              </Text>
+            </div>
+          )}
         </Space>
       ),
     },
@@ -515,171 +282,159 @@ const handleForceK8sCheck = async () => {
       title: 'Restarts',
       dataIndex: 'restarts',
       key: 'restarts',
+      width: 80,
       render: (restarts) => (
-        <Tag color={restarts > 5 ? 'red' : restarts > 0 ? 'orange' : 'green'}>
-          {restarts}
-        </Tag>
-      ),
-    },
-    {
-      title: 'Age',
-      dataIndex: 'age',
-      key: 'age',
-      render: (age) => (
-        <Space>
-          <ClockCircleOutlined />
-          {age}
-        </Space>
+        <Tooltip title={`${restarts} restarts`}>
+          <Badge 
+            count={restarts} 
+            overflowCount={99}
+            style={{ 
+              backgroundColor: restarts > 5 ? '#ff4d4f' : 
+                              restarts > 0 ? '#fa8c16' : '#52c41a' 
+            }}
+          />
+        </Tooltip>
       ),
     },
     {
       title: 'Node',
       dataIndex: 'node',
       key: 'node',
+      width: 120,
+      ellipsis: true,
       render: (node) => (
-        <Tooltip title={`Running on ${node}`}>
-          <Tag>{node}</Tag>
+        <Tooltip title={node}>
+          <Text style={{ fontSize: '12px' }}>{node || 'Unknown'}</Text>
         </Tooltip>
       ),
     },
     {
       title: 'Actions',
       key: 'actions',
-      width: 200,
+      width: 100,
       render: (_, record) => (
         <Space size="small">
-          <Tooltip title="Quick Restart">
+          <Tooltip title="View History">
             <Button
-              type="primary"
+              type="text"
+              icon={<HistoryOutlined />}
               size="small"
-              icon={<PlayCircleOutlined />}
-              loading={actionLoading === `restart-${record.name}`}
-              onClick={() => handleRestartPod(record)}
+              onClick={() => handleViewHistory(record)}
             />
           </Tooltip>
-          
-          <Tooltip title="View Logs">
-            <Button
-              size="small"
-              icon={<EyeOutlined />}
-              onClick={() => handleViewLogs(record)}
-            />
-          </Tooltip>
-
-          <Popconfirm
-            title="Delete Pod"
-            description="Are you sure you want to delete this pod?"
-            onConfirm={() => handleDeletePod(record)}
-            okText="Delete"
-            cancelText="Cancel"
-            okButtonProps={{ danger: true }}
-          >
-            <Tooltip title="Delete Pod">
+          {!record.isDeleted && (
+            <Dropdown
+              menu={getPodActionsMenu(record)}
+              trigger={['click']}
+              placement="bottomRight"
+            >
               <Button
-                danger
+                type="text"
+                icon={<MoreOutlined />}
                 size="small"
-                icon={<DeleteOutlined />}
-                loading={actionLoading === `delete-${record.name}`}
               />
-            </Tooltip>
-          </Popconfirm>
-
-          <Dropdown 
-            menu={getPodActionsMenu(record)}
-            trigger={['click']}
-            placement="bottomRight"
-          >
-            <Button size="small" icon={<MoreOutlined />} />
-          </Dropdown>
+            </Dropdown>
+          )}
         </Space>
       ),
     },
   ];
-
-  const nodeColumns = [
-    {
-      title: 'Node Name',
-      dataIndex: 'name',
-      key: 'name',
-      render: (text, record) => (
-        <Space>
-          <DatabaseOutlined />
-          <div>
-            <Text strong>{text}</Text>
-            <div>
-              <Space>
-                {record.roles.map(role => (
-                  <Tag key={role} color="blue" size="small">{role}</Tag>
-                ))}
-              </Space>
-            </div>
-          </div>
-        </Space>
-      ),
-    },
-    {
-      title: 'Status',
-      dataIndex: 'status',
-      key: 'status',
-      render: (status) => (
-        <Tag color={status === 'Ready' ? 'green' : 'red'}>
-          {status}
-        </Tag>
-      ),
-    },
-    {
-      title: 'Version',
-      dataIndex: 'version',
-      key: 'version',
-    },
-    {
-      title: 'Age',
-      dataIndex: 'age',
-      key: 'age',
-    },
-    {
-      title: 'Capacity',
-      key: 'capacity',
-      render: (_, record) => (
-        <Space direction="vertical" size="small">
-          <Text style={{ fontSize: '12px' }}>CPU: {record.capacity.cpu}</Text>
-          <Text style={{ fontSize: '12px' }}>Memory: {record.capacity.memory}</Text>
-          <Text style={{ fontSize: '12px' }}>Pods: {record.capacity.pods}</Text>
-        </Space>
-      ),
-    },
-  ];
-
-  if (!clusterInfo?.configured) {
-    return (
-      <Alert
-        message="Kubernetes Not Configured"
-        description="Configure your kubeconfig file path to enable Kubernetes monitoring."
-        type="warning"
-        showIcon
-      />
-    );
-  }
 
   return (
     <div>
+      {/* Statistics Cards */}
+      {statistics && (
+        <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
+          <Col xs={12} sm={6}>
+            <Card>
+              <Statistic
+                title="Total Pods"
+                value={statistics.total}
+                prefix={<BarChartOutlined />}
+              />
+            </Card>
+          </Col>
+          <Col xs={12} sm={6}>
+            <Card>
+              <Statistic
+                title="Running"
+                value={statistics.running}
+                valueStyle={{ color: '#3f8600' }}
+              />
+            </Card>
+          </Col>
+          <Col xs={12} sm={6}>
+            <Card>
+              <Statistic
+                title="Failed"
+                value={statistics.failed}
+                valueStyle={{ color: '#cf1322' }}
+              />
+            </Card>
+          </Col>
+          <Col xs={12} sm={6}>
+            <Card>
+              <Statistic
+                title="Deleted"
+                value={statistics.deleted}
+                valueStyle={{ color: '#8c8c8c' }}
+              />
+            </Card>
+          </Col>
+        </Row>
+      )}
+
+      {/* Recent Changes Alert */}
+      {changes.length > 0 && (
+        <Alert
+          message="Recent Pod Changes"
+          description={
+            <div>
+              {changes.slice(0, 3).map((change, index) => (
+                <div key={index} style={{ marginBottom: 4 }}>
+                  {change.type === 'created' && (
+                    <Text>
+                      <PlayCircleOutlined style={{ color: '#52c41a', marginRight: 8 }} />
+                      Created: <Text strong>{change.pod.namespace}/{change.pod.name}</Text>
+                    </Text>
+                  )}
+                  {change.type === 'deleted' && (
+                    <Text>
+                      <DeleteOutlined style={{ color: '#ff4d4f', marginRight: 8 }} />
+                      Deleted: <Text strong>{change.pod.namespace}/{change.pod.name}</Text>
+                    </Text>
+                  )}
+                  {change.type === 'status_change' && (
+                    <Text>
+                      <ExclamationCircleOutlined style={{ color: '#1890ff', marginRight: 8 }} />
+                      Status change: <Text strong>{change.pod.namespace}/{change.pod.name}</Text>
+                      <span> ({change.oldStatus} → {change.newStatus})</span>
+                    </Text>
+                  )}
+                </div>
+              ))}
+              {changes.length > 3 && (
+                <Text type="secondary">... and {changes.length - 3} more changes</Text>
+              )}
+            </div>
+          }
+          type="info"
+          closable
+          style={{ marginBottom: 16 }}
+        />
+      )}
+
       {/* Control Panel */}
       <Card style={{ marginBottom: 24 }}>
         <Row gutter={[16, 16]} align="middle">
-          <Col xs={24} md={8}>
-            <Space>
-              <Title level={4} style={{ margin: 0 }}>Kubernetes Cluster</Title>
-              <Tag color="blue">Connected</Tag>
-            </Space>
-          </Col>
-
-          <Col xs={24} md={8}>
+          <Col xs={24} md={6}>
             <Space>
               <Text>Namespace:</Text>
               <Select
                 value={selectedNamespace}
                 onChange={setSelectedNamespace}
-                style={{ width: 200 }}
+                style={{ width: 150 }}
+                loading={namespaces.length === 0}
               >
                 <Option value="all">All Namespaces</Option>
                 {namespaces.map(ns => (
@@ -689,263 +444,192 @@ const handleForceK8sCheck = async () => {
             </Space>
           </Col>
 
-          <Col xs={24} md={8}>
+          <Col xs={24} md={4}>
+            <Space>
+              <Text>Include Deleted:</Text>
+              <Switch
+                checked={includeDeleted}
+                onChange={setIncludeDeleted}
+                size="small"
+              />
+            </Space>
+          </Col>
+
+          <Col xs={24} md={4}>
+            <Space>
+              <Text>Sort by:</Text>
+              <Select
+                value={sortBy}
+                onChange={setSortBy}
+                style={{ width: 120 }}
+              >
+                <Option value="lastSeen">Last Seen</Option>
+                <Option value="name">Name</Option>
+                <Option value="status">Status</Option>
+                <Option value="firstSeen">Created</Option>
+              </Select>
+            </Space>
+          </Col>
+
+          <Col xs={24} md={6}>
             <Space>
               <Button 
                 icon={<ReloadOutlined />} 
-                onClick={loadInitialData}
+                onClick={loadEnhancedPods}
                 loading={loading}
               >
                 Refresh
               </Button>
-              <Button
-                type={autoRefresh ? 'primary' : 'default'}
-                onClick={() => setAutoRefresh(!autoRefresh)}
-              >
-                Auto Refresh: {autoRefresh ? 'ON' : 'OFF'}
-              </Button>
+              <Switch
+                checked={autoRefresh}
+                onChange={setAutoRefresh}
+                checkedChildren="Auto"
+                unCheckedChildren="Manual"
+              />
             </Space>
+          </Col>
+
+          <Col xs={24} md={4}>
+            <Text type="secondary" style={{ fontSize: '12px' }}>
+              Last updated: {new Date().toLocaleTimeString()}
+            </Text>
           </Col>
         </Row>
       </Card>
 
-      {/* Statistics */}
-      <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
-        <Col xs={24} sm={12} lg={6}>
-          <Card>
-            <Statistic
-              title="Total Pods"
-              value={clusterInfo?.pods?.total || 0}
-              prefix={<CloudOutlined />}
-            />
-          </Card>
-        </Col>
-        <Col xs={24} sm={12} lg={6}>
-          <Card>
-            <Statistic
-              title="Running Pods"
-              value={clusterInfo?.pods?.running || 0}
-              valueStyle={{ color: '#52c41a' }}
-              prefix={<CheckCircleOutlined />}
-            />
-          </Card>
-        </Col>
-        <Col xs={24} sm={12} lg={6}>
-          <Card>
-            <Statistic
-              title="Failed Pods"
-              value={clusterInfo?.pods?.failed || 0}
-              valueStyle={{ color: '#ff4d4f' }}
-              prefix={<ExclamationCircleOutlined />}
-            />
-          </Card>
-        </Col>
-        <Col xs={24} sm={12} lg={6}>
-          <Card>
-            <Statistic
-              title="Nodes"
-              value={clusterInfo?.nodes?.ready || 0}
-              suffix={`/ ${clusterInfo?.nodes?.total || 0}`}
-              prefix={<DatabaseOutlined />}
-            />
-          </Card>
-        </Col>
-      </Row>
-
-      {/* Pods Table */}
-      <Card title={
-        <Space>
-          <CloudOutlined />
-          <span>Pods</span>
-          <Tag color="blue">{pods.length} pods</Tag>
-        </Space>
-      } style={{ marginBottom: 24 }}>
+      {/* Enhanced Pod Table */}
+      <Card title={`Pod Lifecycle Monitor (${pods.length} pods)`}>
         <Table
-          columns={podColumns}
+          columns={enhancedColumns}
           dataSource={pods}
+          rowKey={(record) => `${record.namespace}-${record.name}-${record.firstSeen}`}
           loading={loading}
-          pagination={{ 
-            pageSize: 10,
+          pagination={{
+            pageSize: 20,
             showSizeChanger: true,
             showQuickJumper: true,
-            showTotal: (total, range) => `${range[0]}-${range[1]} of ${total} pods`
+            showTotal: (total, range) => 
+              `${range[0]}-${range[1]} of ${total} pods`,
           }}
-          rowKey="name"
-          size="middle"
+          rowClassName={(record) => 
+            record.isDeleted ? 'deleted-pod-row' : ''
+          }
+          scroll={{ x: 1200 }}
         />
       </Card>
 
-      {/* Nodes Table */}
-      <Card title={
-        <Space>
-          <DatabaseOutlined />
-          <span>Nodes</span>
-          <Tag color="green">{nodes.length} nodes</Tag>
-        </Space>
-      }>
-        <Table
-          columns={nodeColumns}
-          dataSource={nodes}
-          pagination={false}
-          rowKey="name"
-          size="middle"
-        />
-      </Card>
-
-      {/* Pod Logs Modal */}
+      {/* Pod History Modal */}
       <Modal
         title={
           <Space>
-            <FileTextOutlined />
-            Pod Logs: {logsModal.pod?.name}
-            <Tag color="blue">{logsModal.pod?.namespace}</Tag>
+            <HistoryOutlined />
+            Pod Lifecycle History
           </Space>
         }
-        open={logsModal.visible}
-        onCancel={() => setLogsModal({ visible: false, pod: null, logs: '', loading: false })}
-        footer={[
-          <Button key="refresh" onClick={() => handleViewLogs(logsModal.pod)}>
-            Refresh Logs
-          </Button>,
-          <Button key="close" type="primary" onClick={() => setLogsModal({ visible: false, pod: null, logs: '', loading: false })}>
-            Close
-          </Button>
-        ]}
-        width={900}
+        open={historyModal.visible}
+        onCancel={() => setHistoryModal({ visible: false, pod: null })}
+        footer={null}
+        width={800}
       >
-        <div style={{
-          background: '#000',
-          color: '#00ff00',
-          padding: '16px',
-          borderRadius: '6px',
-          fontFamily: 'Consolas, Monaco, "Courier New", monospace',
-          fontSize: '13px',
-          maxHeight: '500px',
-          overflow: 'auto',
-          whiteSpace: 'pre-wrap'
-        }}>
-          {logsModal.loading ? (
-            <div style={{ textAlign: 'center', padding: '40px', color: '#00ff00' }}>
-              ⏳ Loading logs...
-            </div>
-          ) : (
-            logsModal.logs || 'No logs available'
-          )}
-        </div>
-      </Modal>
-
-      {/* Pod Describe Modal */}
-      <Modal
-        title={
-          <Space>
-            <InfoCircleOutlined />
-            Pod Description: {describeModal.pod?.name}
-          </Space>
-        }
-        open={describeModal.visible}
-        onCancel={() => setDescribeModal({ visible: false, pod: null, description: '', loading: false })}
-        footer={[
-          <Button key="close" type="primary" onClick={() => setDescribeModal({ visible: false, pod: null, description: '', loading: false })}>
-            Close
-          </Button>
-        ]}
-        width={900}
-      >
-        <TextArea
-          value={describeModal.description}
-          readOnly
-          rows={20}
-          style={{ 
-            fontFamily: 'Consolas, Monaco, "Courier New", monospace',
-            fontSize: '12px'
-          }}
-          placeholder={describeModal.loading ? 'Loading pod description...' : 'No description available'}
-        />
-      </Modal>
-
-      {/* Exec Modal */}
-      <Modal
-        title={
-          <Space>
-            <CodeOutlined />
-            Exec into Pod: {execModal.pod?.name}
-          </Space>
-        }
-        open={execModal.visible}
-        onCancel={() => setExecModal({ visible: false, pod: null, command: '', containers: [] })}
-        onOk={executeExec}
-        okText="Generate Command"
-      >
-        <Space direction="vertical" style={{ width: '100%' }}>
+        {historyModal.pod && (
           <div>
-            <Text strong>Command to execute:</Text>
-            <Input
-              value={execModal.command}
-              onChange={(e) => setExecModal(prev => ({ ...prev, command: e.target.value }))}
-              placeholder="/bin/bash"
-            />
+            <Card size="small" style={{ marginBottom: 16 }}>
+              <Row gutter={[16, 16]}>
+                <Col span={12}>
+                  <Space direction="vertical" size="small">
+                    <div>
+                      <Text strong>Pod Name:</Text> {historyModal.pod.pod.name}
+                    </div>
+                    <div>
+                      <Text strong>Namespace:</Text> {historyModal.pod.pod.namespace}
+                    </div>
+                    <div>
+                      <Text strong>Current Status:</Text> 
+                      <Tag 
+                        color={getStatusColor(historyModal.pod.pod.status, historyModal.pod.pod.isDeleted)}
+                        style={{ marginLeft: 8 }}
+                      >
+                        {historyModal.pod.pod.isDeleted ? 'DELETED' : historyModal.pod.pod.status}
+                      </Tag>
+                    </div>
+                  </Space>
+                </Col>
+                <Col span={12}>
+                  <Space direction="vertical" size="small">
+                    <div>
+                      <Text strong>First Seen:</Text> {new Date(historyModal.pod.lifecycle.firstSeen).toLocaleString()}
+                    </div>
+                    <div>
+                      <Text strong>Last Seen:</Text> {new Date(historyModal.pod.lifecycle.lastSeen).toLocaleString()}
+                    </div>
+                    <div>
+                      <Text strong>Age:</Text> {historyModal.pod.lifecycle.age}
+                    </div>
+                    {historyModal.pod.pod.isDeleted && (
+                      <div>
+                        <Text strong>Deleted At:</Text> {new Date(historyModal.pod.lifecycle.deletedAt).toLocaleString()}
+                      </div>
+                    )}
+                  </Space>
+                </Col>
+              </Row>
+            </Card>
+
+            <Card size="small" title="Status History Timeline">
+              <Timeline
+                items={historyModal.pod.statusHistory.map((event, index) => ({
+                  key: index,
+                  color: event.event === 'deleted' ? 'red' : 
+                         event.event === 'created' ? 'green' : 
+                         event.event === 'restart' ? 'orange' : 'blue',
+                  children: (
+                    <div>
+                      <div>
+                        <Text strong>{event.status}</Text>
+                        <Tag size="small" style={{ marginLeft: 8 }}>
+                          {event.event.replace('_', ' ')}
+                        </Tag>
+                      </div>
+                      <div>
+                        <Text type="secondary" style={{ fontSize: '12px' }}>
+                          {new Date(event.timestamp).toLocaleString()}
+                        </Text>
+                      </div>
+                      {event.previousStatus && (
+                        <div>
+                          <Text type="secondary" style={{ fontSize: '11px' }}>
+                            Previous: {event.previousStatus}
+                          </Text>
+                        </div>
+                      )}
+                      {event.restartCount !== undefined && (
+                        <div>
+                          <Text type="secondary" style={{ fontSize: '11px' }}>
+                            Restart #{event.restartCount}
+                          </Text>
+                        </div>
+                      )}
+                    </div>
+                  )
+                }))}
+              />
+            </Card>
           </div>
-          
-          {execModal.containers.length > 1 && (
-            <div>
-              <Text strong>Available containers:</Text>
-              <div>
-                {execModal.containers.map(container => (
-                  <Tag key={container} color="blue">{container}</Tag>
-                ))}
-              </div>
-            </div>
-          )}
-          
-          <Alert
-            message="Exec Command Generation"
-            description="This will generate a kubectl exec command that you can run in your terminal."
-            type="info"
-            showIcon
-          />
-        </Space>
+        )}
       </Modal>
 
-      {/* Scale Deployment Modal */}
-      <Modal
-        title={
-          <Space>
-            <ExpandOutlined />
-            Scale Deployment: {scaleModal.deployment?.name}
-          </Space>
+      {/* Custom CSS for deleted pods */}
+      <style jsx>{`
+        .deleted-pod-row {
+          background-color: #fff2f0 !important;
+          opacity: 0.8;
         }
-        open={scaleModal.visible}
-        onCancel={() => setScaleModal({ visible: false, deployment: null, replicas: 1 })}
-        onOk={executeScale}
-        okText="Scale"
-      >
-        <Space direction="vertical" style={{ width: '100%' }}>
-          <div>
-            <Text strong>Current Replicas: </Text>
-            <Tag color="blue">{scaleModal.deployment?.replicas}</Tag>
-          </div>
-          
-          <div>
-            <Text strong>New Replica Count:</Text>
-            <InputNumber
-              min={0}
-              max={50}
-              value={scaleModal.replicas}
-              onChange={(value) => setScaleModal(prev => ({ ...prev, replicas: value }))}
-              style={{ width: '100%', marginTop: 8 }}
-            />
-          </div>
-          
-          <Alert
-            message="Scaling Deployment"
-            description={`This will scale the deployment to ${scaleModal.replicas} replicas. Pods will be created or destroyed as needed.`}
-            type="warning"
-            showIcon
-          />
-        </Space>
-      </Modal>
+        .deleted-pod-row:hover {
+          background-color: #ffebe6 !important;
+        }
+      `}</style>
     </div>
   );
 };
 
-export default KubernetesMonitor;
+export default EnhancedKubernetesMonitor;

@@ -341,7 +341,59 @@ restartPod: async (namespace, podName) => {
   getDeploymentInfo: async (namespace, podName) => {
     const response = await api.get(`/api/kubernetes/pods/${namespace}/${podName}/deployment`);
     return response.data;
-  }
+  },
+
+  getEnhancedPods: async (options = {}) => {
+    const {
+      namespace = 'all',
+      includeDeleted = true,
+      sortBy = 'lastSeen',
+      maxAge
+    } = options;
+
+    const params = new URLSearchParams({
+      namespace,
+      includeDeleted: includeDeleted.toString(),
+      sortBy
+    });
+
+    if (maxAge) {
+      params.append('maxAge', maxAge.toString());
+    }
+
+    const response = await api.get(`/api/kubernetes/pods/enhanced?${params}`);
+    return response.data;
+  },
+
+  // Get pod lifecycle history
+  getPodHistory: async (namespace, podName) => {
+    const response = await api.get(`/api/kubernetes/pods/${namespace}/${podName}/history`);
+    return response.data;
+  },
+
+  // Get pod statistics and trends
+  getPodStatistics: async (options = {}) => {
+    const {
+      namespace = 'all',
+      timeRange = 24
+    } = options;
+
+    const params = new URLSearchParams({
+      namespace,
+      timeRange: timeRange.toString()
+    });
+
+    const response = await api.get(`/api/kubernetes/pods/statistics?${params}`);
+    return response.data;
+  },
+
+  // Cleanup old pod history
+  cleanupPodHistory: async (maxAgeDays = 30) => {
+    const response = await api.post('/api/kubernetes/pods/cleanup', {
+      maxAgeDays
+    });
+    return response.data;
+  },
 
 };
 

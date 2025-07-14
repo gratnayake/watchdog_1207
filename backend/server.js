@@ -14,6 +14,8 @@ const thresholdService = require('./services/thresholdService');
 const databaseOperationsService = require('./services/databaseOperationsService');
 const podActionsService = require('./services/podActionsService');
 const kubernetesMonitoringService = require('./services/kubernetesMonitoringService');
+const podLifecycleService = require('./services/podLifecycleService');
+
 
 const { exec } = require('child_process');
 const util = require('util');
@@ -2051,6 +2053,186 @@ app.get('/api/kubernetes/pods/:namespace/:podName/deployment', async (req, res) 
     });
   }
 });
+
+app.get('/api/kubernetes/pods/enhanced', async (req, res) => {
+  try {
+    const { 
+      namespace = 'default', 
+      includeDeleted = 'true',
+      maxAge,
+      sortBy = 'lastSeen'
+    } = req.query;
+    
+    console.log(`🔍 Enhanced pods request: namespace=${namespace}, includeDeleted=${includeDeleted}`);
+    
+    // Get current pods from Kubernetes
+    let currentPods = [];
+    try {
+      if (namespace === 'all') {
+        currentPods = await kubernetesService.getAllPods();
+      } else {
+        currentPods = await kubernetesService.getPods(namespace);
+      }
+    } catch (k8sError) {
+      console.log('⚠️ Could not fetch current pods from K8s:', k8sError.message);
+      // Continue with lifecycle service data only
+    }
+    
+    // Update lifecycle tracking with current pods
+    const changes = await podLifecycleService.updatePodLifecycle(currentPods);
+    
+    // Get comprehensive pod list including historical data
+    const comprehensivePods = podLifecycleService.getComprehensivePodList({
+      includeDeleted: includeDeleted === 'true',
+      namespace: namespace === 'all' ? null : namespace,
+      maxAge: maxAge ? parseInt(maxAge) : null,
+      sortBy
+    });
+    
+    // Get statistics
+    const stats = podLifecycleService.getPodStatistics(namespace === 'all' ? null : namespace);
+    
+    res.json({
+      success: true,
+      data: {
+        pods: comprehensivePods,
+        statistics: stats,
+        changes: changes,
+        namespace: namespace,
+        timestamp: new Date(),
+        totalPods: comprehensivePods.length,
+        livePods: currentPods.length
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Enhanced pods error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+app.get('/api/kubernetes/pods/:namespace/:podName/history', async (req, res) => {
+  try {
+    const { namespace, podName } = req.params;
+    
+    const pods = podLifecycleService.getComprehensivePodList({
+      includeDeleted: true,
+      namespace
+    });
+    
+    const pod = pods.find(p => p.name === podName && p.namespace === namespace);
+    
+    if (!pod) {
+      return res.status(404).json({
+        success: false,
+        error: 'Pod not found in history'
+      });
+    }
+    
+    res.json({
+      success: true,
+      data: {
+        pod: pod,
+        statusHistory: pod.statusHistory,
+        lifecycle: {
+          firstSeen: pod.firstSeen,
+          lastSeen: pod.lastSeen,
+          isDeleted: pod.isDeleted,
+          deletedAt: pod.deletedAt,
+          age: pod.age,
+          statusDuration: pod.statusDuration
+        }
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Pod history error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+app.get('/api/kubernetes/pods/statistics', async (req, res) => {
+  try {
+    const { namespace = 'all', timeRange = 24 } = req.query;
+    
+    const stats = podLifecycleService.getPodStatistics(
+      namespace === 'all' ? null : namespace
+    );
+    
+    // Add time-based statistics
+    const pods = podLifecycleService.getComprehensivePodList({
+      includeDeleted: true,
+      namespace: namespace === 'all' ? null : namespace,
+      maxAge: parseInt(timeRange)
+    });
+    
+    // Calculate trends
+    const now = new Date();
+    const intervals = {
+      '1h': new Date(now - 60 * 60 * 1000),
+      '6h': new Date(now - 6 * 60 * 60 * 1000),
+      '24h': new Date(now - 24 * 60 * 60 * 1000)
+    };
+    
+    const trends = {};
+    Object.entries(intervals).forEach(([period, cutoff]) => {
+      const recentPods = pods.filter(p => new Date(p.firstSeen) > cutoff);
+      const deletedPods = pods.filter(p => p.isDeleted && p.deletedAt && new Date(p.deletedAt) > cutoff);
+      
+      trends[period] = {
+        created: recentPods.length,
+        deleted: deletedPods.length,
+        netChange: recentPods.length - deletedPods.length
+      };
+    });
+    
+    res.json({
+      success: true,
+      data: {
+        current: stats,
+        trends: trends,
+        timeRange: `${timeRange}h`,
+        namespace: namespace
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Pod statistics error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+app.post('/api/kubernetes/pods/cleanup', async (req, res) => {
+  try {
+    const { maxAgeDays = 30 } = req.body;
+    
+    const removedCount = podLifecycleService.cleanupOldHistory(maxAgeDays);
+    
+    res.json({
+      success: true,
+      message: `Cleaned up ${removedCount} old pod records`,
+      removedCount: removedCount
+    });
+    
+  } catch (error) {
+    console.error('❌ Cleanup error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+
 
 // Error handling middleware
 app.use((err, req, res, next) => {
