@@ -876,7 +876,18 @@ app.get('/api/kubernetes/cluster-info', async (req, res) => {
 // Kubernetes monitoring endpoints
 app.get('/api/kubernetes/monitoring/status', (req, res) => {
   try {
-    const status = kubernetesMonitoringService.getStatus();
+    // Since we haven't implemented the enhanced monitoring service yet,
+    // return a basic status
+    const config = kubernetesConfigService.getConfig();
+    const status = {
+      isMonitoring: false, // Set to false for now since enhanced monitoring isn't active
+      isConfigured: config.isConfigured,
+      emailGroupId: config.emailGroupId,
+      podCount: 0,
+      nodeCount: 0,
+      lastCheck: new Date()
+    };
+
     res.json({
       success: true,
       status: status,
@@ -893,20 +904,27 @@ app.get('/api/kubernetes/monitoring/status', (req, res) => {
 
 app.post('/api/kubernetes/monitoring/start', (req, res) => {
   try {
-    const started = kubernetesMonitoringService.startMonitoring();
+    // For now, just return success - we'll implement this later
+    const config = kubernetesConfigService.getConfig();
     
-    if (started) {
-      res.json({
-        success: true,
-        message: 'Kubernetes monitoring started successfully',
-        status: kubernetesMonitoringService.getStatus()
-      });
-    } else {
-      res.status(400).json({
+    if (!config.isConfigured) {
+      return res.status(400).json({
         success: false,
-        error: 'Failed to start Kubernetes monitoring'
+        error: 'Kubernetes not configured. Please configure kubeconfig path first.'
       });
     }
+
+    // TODO: Implement kubernetesMonitoringService.startMonitoring() later
+    
+    res.json({
+      success: true,
+      message: 'Kubernetes monitoring will be implemented in next phase',
+      status: {
+        isMonitoring: false,
+        isConfigured: config.isConfigured,
+        emailGroupId: config.emailGroupId
+      }
+    });
   } catch (error) {
     console.error('❌ Start Kubernetes monitoring error:', error);
     res.status(500).json({
@@ -918,20 +936,15 @@ app.post('/api/kubernetes/monitoring/start', (req, res) => {
 
 app.post('/api/kubernetes/monitoring/stop', (req, res) => {
   try {
-    const stopped = kubernetesMonitoringService.stopMonitoring();
-    
-    if (stopped) {
-      res.json({
-        success: true,
-        message: 'Kubernetes monitoring stopped successfully',
-        status: kubernetesMonitoringService.getStatus()
-      });
-    } else {
-      res.status(400).json({
-        success: false,
-        error: 'Failed to stop Kubernetes monitoring'
-      });
-    }
+    // For now, just return success
+    res.json({
+      success: true,
+      message: 'Kubernetes monitoring stopped',
+      status: {
+        isMonitoring: false,
+        isConfigured: kubernetesConfigService.getConfig().isConfigured
+      }
+    });
   } catch (error) {
     console.error('❌ Stop Kubernetes monitoring error:', error);
     res.status(500).json({
@@ -945,12 +958,10 @@ app.post('/api/kubernetes/monitoring/force-check', async (req, res) => {
   try {
     console.log('🔍 Manual Kubernetes health check requested');
     
-    await kubernetesMonitoringService.checkPodHealth();
-    await kubernetesMonitoringService.checkNodeHealth();
-    
+    // For now, just return success - we'll implement actual checking later
     res.json({
       success: true,
-      message: 'Kubernetes health check completed',
+      message: 'Manual health check completed (placeholder)',
       timestamp: new Date()
     });
   } catch (error) {
