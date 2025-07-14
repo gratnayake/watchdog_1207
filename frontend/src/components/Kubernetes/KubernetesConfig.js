@@ -24,7 +24,7 @@ import {
   SettingOutlined,
   TeamOutlined
 } from '@ant-design/icons';
-import { kubernetesAPI } from '../../services/api';
+import { kubernetesAPI, emailAPI } from '../../services/api';
 import { useMode } from '../../contexts/ModeContext';
 
 const { Title, Text } = Typography;
@@ -66,13 +66,18 @@ const KubernetesConfig = () => {
 
   const loadEmailGroups = async () => {
     try {
-      const response = await fetch('/api/email/groups');
-      const data = await response.json();
-      if (data.success) {
-        setEmailGroups(data.data);
+      console.log('🔍 Loading email groups using emailAPI...');
+      const response = await emailAPI.getEmailGroups();
+      console.log('📡 EmailAPI response:', response);
+      
+      if (response.success) {
+        console.log('✅ Email groups loaded:', response.data.length, 'groups');
+        setEmailGroups(response.data || []);
+      } else {
+        console.error('❌ EmailAPI returned error:', response.error);
       }
     } catch (error) {
-      console.error('Failed to load email groups:', error);
+      console.error('❌ Failed to load email groups:', error);
     }
   };
 
@@ -251,6 +256,7 @@ const KubernetesConfig = () => {
 
             <Divider orientation="left">Alert Configuration</Divider>
 
+            
             <Form.Item
               name="emailGroupId"
               label="Pod Failure Alert Group"
