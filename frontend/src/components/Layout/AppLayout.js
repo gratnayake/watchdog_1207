@@ -1,3 +1,6 @@
+// Update your frontend/src/components/Layout/AppLayout.js
+// Replace the problematic useEffect and CLIENT MODE ROUTING section:
+
 import React, { useState, useEffect  } from 'react';
 import { Layout } from 'antd';
 import Sidebar from './Sidebar';
@@ -22,30 +25,38 @@ import SimpleScriptManager from '../Scripts/SimpleScriptManager';
 const { Content, Footer } = Layout;
 
 const AppLayout = () => {
-  // FIXED: Set default page based on mode
   const { isServerMode } = useMode();
   const [currentPage, setCurrentPage] = useState(isServerMode ? 'realtime-dashboard' : 'url-monitoring');
   const { isAdmin } = useAuth();
   const { isDarkMode } = useTheme();  
   const { loading: modeLoading } = useMode();
 
-  // FIXED: Remove the problematic useEffect that was causing the redirect
+  // FIXED: Better logic for page validation that doesn't force redirects
   useEffect(() => {
     if (!modeLoading && !isServerMode) {
-      const allowedPages = ['url-monitoring', 'kubernetes-config'];
-      if (!allowedPages.includes(currentPage)) {
+      // Define allowed pages for client mode
+      const allowedClientPages = [
+        'url-monitoring',
+        'kubernetes-config',
+        'email-config',    // ✅ Allow email config in client mode
+        'users'            // ✅ Allow user management in client mode
+      ];
+      
+      // Only redirect if current page is not allowed AND user is not admin
+      // OR if page is not allowed at all
+      if (!allowedClientPages.includes(currentPage)) {
+        console.log(`Page ${currentPage} not allowed in client mode, redirecting to url-monitoring`);
         setCurrentPage('url-monitoring');
       }
     }
-    // REMOVED: The problematic auto-redirect logic that was changing URL monitoring to realtime
-  }, [isServerMode, modeLoading, currentPage]);
+  }, [isServerMode, modeLoading]); // Removed currentPage dependency to prevent loops
 
   const renderContent = () => {
     if (modeLoading) {
       return <div>Loading...</div>;
     }
 
-    // CLIENT MODE ROUTING - Minimal options
+    // CLIENT MODE ROUTING - FIXED: Allow admin pages for admins
     if (!isServerMode) {
       switch (currentPage) {
         case 'url-monitoring':
@@ -53,15 +64,17 @@ const AppLayout = () => {
         case 'kubernetes-config':
           return isAdmin ? <KubernetesConfig /> : <UrlMonitoring />;
         case 'email-config':
+          // ✅ FIXED: Always show EmailManagement for admins in client mode
           return isAdmin ? <EmailManagement /> : <UrlMonitoring />;
         case 'users':
+          // ✅ FIXED: Always show UserManagement for admins in client mode  
           return isAdmin ? <UserManagement /> : <UrlMonitoring />;
         default:
           return <UrlMonitoring />;
       }
     }
     
-    // SERVER MODE ROUTING - Full options
+    // SERVER MODE ROUTING - Full options (unchanged)
     switch (currentPage) {
       case 'dashboard':
         return <Dashboard />;
@@ -82,7 +95,6 @@ const AppLayout = () => {
       case 'kubernetes':
         return <KubernetesMonitor />;
       case 'url-monitoring':
-        // FIXED: Return URL Monitoring instead of redirecting
         return <UrlMonitoring />;      
       case 'kubernetes-config':
         return isAdmin ? <KubernetesConfig /> : <RealtimeDashboard />;
@@ -150,14 +162,14 @@ const AppLayout = () => {
         </Content>
         <Layout.Footer style={{
           textAlign: 'center',
-          background: isDarkMode ? '#141414' : '#f0f2f5',
-          color: isDarkMode ? '#8c8c8c' : '#666',
-          borderTop: isDarkMode ? '1px solid #303030' : '1px solid #e8e8e8',
-          padding: '12px 24px'
-          }}>
-          © 2025 Tsunami Solutions. All rights reserved. | Uptime WatchDog v1.0
-        </Layout.Footer>          
-      </Layout>      
+          background: isDarkMode ? '#1f1f1f' : '#f0f2f5',
+          color: isDarkMode ? '#ffffff' : '#000000'
+        }}>
+          <div style={{ fontSize: '12px' }}>
+            🔷 Uptime WatchDog by <strong>Tsunami Solutions</strong> - Enterprise Monitoring Platform
+          </div>
+        </Layout.Footer>
+      </Layout>
     </Layout>
   );
 };

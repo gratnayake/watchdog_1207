@@ -12,7 +12,12 @@ import {
   Popconfirm,
   Switch,
   Statistic,
-  Tooltip
+  Tooltip,
+  Badge,
+  Progress,
+  Input,
+  Select,
+  Alert
 } from 'antd';
 import { 
   LinkOutlined, 
@@ -23,12 +28,17 @@ import {
   CheckCircleOutlined,
   ExclamationCircleOutlined,
   ClockCircleOutlined,
-  GlobalOutlined
+  GlobalOutlined,
+  SearchOutlined,
+  FilterOutlined,
+  EyeOutlined,
+  WarningOutlined
 } from '@ant-design/icons';
 import { urlAPI } from '../../services/api';
 import UrlModal from './UrlModal';
 
 const { Title, Text } = Typography;
+const { Option } = Select;
 
 const UrlMonitoring = () => {
   const [urls, setUrls] = useState([]);
@@ -37,6 +47,9 @@ const UrlMonitoring = () => {
   const [loading, setLoading] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
   const [editingUrl, setEditingUrl] = useState(null);
+  const [searchText, setSearchText] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [methodFilter, setMethodFilter] = useState('all');
 
   useEffect(() => {
     loadInitialData();
@@ -156,121 +169,210 @@ const UrlMonitoring = () => {
     return isUp ? 'success' : 'error';
   };
 
+  const getResponseTimeColor = (responseTime) => {
+    if (responseTime < 500) return '#52c41a';
+    if (responseTime < 1000) return '#faad14';
+    if (responseTime < 3000) return '#fa8c16';
+    return '#ff4d4f';
+  };
+
+  // Filter URLs based on search and filters
+  const filteredUrls = urls.filter(url => {
+    const status = getUrlStatus(url.id);
+    
+    // Search filter
+    const matchesSearch = url.name.toLowerCase().includes(searchText.toLowerCase()) ||
+                         url.url.toLowerCase().includes(searchText.toLowerCase());
+    
+    // Status filter
+    const matchesStatus = statusFilter === 'all' || 
+                         (statusFilter === 'up' && status?.isUp) ||
+                         (statusFilter === 'down' && status && !status.isUp) ||
+                         (statusFilter === 'enabled' && url.enabled) ||
+                         (statusFilter === 'disabled' && !url.enabled);
+    
+    // Method filter
+    const matchesMethod = methodFilter === 'all' || url.method === methodFilter;
+    
+    return matchesSearch && matchesStatus && matchesMethod;
+  });
+
   const columns = [
+    {
+      title: 'Status',
+      key: 'status',
+      width: 70,
+      render: (_, record) => {
+        const status = getUrlStatus(record.id);
+        if (!status) {
+          return <Badge status="default" />;
+        }
+        
+        return (
+          <Tooltip title={status.isUp ? 'UP' : 'DOWN'}>
+            <Badge 
+              status={status.isUp ? 'success' : 'error'}
+              text={<Text style={{ fontSize: '11px' }}>{status.isUp ? 'UP' : 'DOWN'}</Text>}
+            />
+          </Tooltip>
+        );
+      },
+    },
     {
       title: 'URL Details',
       key: 'details',
       render: (_, record) => {
-        const status = getUrlStatus(record.id);
         return (
-          <Space direction="vertical" size="small">
-            <div>
-              <Text strong>{record.name}</Text>
-              <br />
-              <Text type="secondary" style={{ fontSize: '12px' }}>
-                <LinkOutlined /> {record.url}
+          <div style={{ lineHeight: '1.3' }}>
+            <div style={{ marginBottom: '2px' }}>
+              <Text strong style={{ fontSize: '13px' }}>{record.name}</Text>
+              {!record.enabled && (
+                <Tag color="default" size="small" style={{ marginLeft: 4, fontSize: '10px', padding: '0 4px' }}>
+                  OFF
+                </Tag>
+              )}
+            </div>
+            <div style={{ marginBottom: '1px' }}>
+              <Text 
+                type="secondary" 
+                style={{ fontSize: '11px' }}
+                copyable={{ text: record.url, tooltips: ['Copy URL', 'Copied!'] }}
+              >
+                {record.url.length > 50 ? `${record.url.substring(0, 50)}...` : record.url}
               </Text>
             </div>
-            {status && (
-              <Tag 
-                color={getStatusColor(status.isUp)}
-                icon={status.isUp ? <CheckCircleOutlined /> : <ExclamationCircleOutlined />}
-              >
-                {status.isUp ? 'UP' : 'DOWN'}
-              </Tag>
-            )}
-          </Space>
+          </div>
         );
       },
     },
     {
       title: 'Method',
-      dataIndex: 'method',
       key: 'method',
-      render: (method) => <Tag color="blue">{method}</Tag>,
+      width: 60,
+      render: (_, record) => (
+        <Tag color="blue" size="small" style={{ fontSize: '10px', margin: 0 }}>
+          {record.method}
+        </Tag>
+      ),
     },
     {
-      title: 'Response Time',
-      key: 'responseTime',
+      title: 'Performance',
+      key: 'performance',
+      width: 110,
       render: (_, record) => {
         const status = getUrlStatus(record.id);
-        if (!status) return <Text type="secondary">-</Text>;
-        
-        const color = status.responseTime < 1000 ? 'green' : 
-                     status.responseTime < 3000 ? 'orange' : 'red';
+        if (!status) {
+          return <Text type="secondary" style={{ fontSize: '11px' }}>No data</Text>;
+        }
         
         return (
-          <Tag color={color}>
-            <ClockCircleOutlined /> {status.responseTime}ms
-          </Tag>
+          <div style={{ lineHeight: '1.2' }}>
+            <div style={{ marginBottom: '2px' }}>
+              <Tag 
+                color={status.responseTime < 1000 ? 'green' : 
+                       status.responseTime < 3000 ? 'orange' : 'red'}
+                size="small"
+                style={{ fontSize: '10px', margin: 0 }}
+              >
+                {status.responseTime}ms
+              </Tag>
+            </div>
+            <div>
+              <Tag 
+                color={status.status >= 200 && status.status < 300 ? 'green' :
+                       status.status >= 400 ? 'red' : 'orange'}
+                size="small"
+                style={{ fontSize: '10px', margin: 0 }}
+              >
+                {status.status || 'ERR'}
+              </Tag>
+            </div>
+          </div>
         );
       },
     },
     {
-      title: 'Status Code',
-      key: 'statusCode',
+      title: 'Interval',
+      key: 'interval',
+      width: 60,
+      render: (_, record) => (
+        <Text style={{ fontSize: '11px' }}>{record.interval}s</Text>
+      ),
+    },
+    {
+      title: 'Last Check',
+      key: 'lastCheck',
+      width: 80,
       render: (_, record) => {
         const status = getUrlStatus(record.id);
-        if (!status) return <Text type="secondary">-</Text>;
+        if (!status) return <Text type="secondary" style={{ fontSize: '10px' }}>Never</Text>;
         
-        const color = status.status >= 200 && status.status < 300 ? 'green' :
-                     status.status >= 400 ? 'red' : 'orange';
+        const lastCheck = new Date(status.lastChecked);
+        const now = new Date();
+        const diffMinutes = Math.floor((now - lastCheck) / 60000);
         
-        return <Tag color={color}>{status.status || 'Error'}</Tag>;
+        return (
+          <Tooltip title={lastCheck.toLocaleString()}>
+            <Text style={{ fontSize: '10px' }}>
+              {diffMinutes < 1 ? 'Now' :
+               diffMinutes < 60 ? `${diffMinutes}m` :
+               `${Math.floor(diffMinutes / 60)}h`}
+            </Text>
+          </Tooltip>
+        );
       },
     },
     {
-      title: 'Interval',
-      dataIndex: 'interval',
-      key: 'interval',
-      render: (interval) => `${interval}s`,
-    },
-    {
-      title: 'Status',
-      dataIndex: 'enabled',
-      key: 'enabled',
-      render: (enabled, record) => (
+      title: 'Monitor',
+      key: 'monitoring',
+      width: 60,
+      render: (_, record) => (
         <Switch
-          checked={enabled}
+          checked={record.enabled}
           onChange={(checked) => handleToggleUrl(record.id, checked)}
-          checkedChildren="ON"
-          unCheckedChildren="OFF"
+          size="small"
         />
       ),
     },
     {
       title: 'Actions',
       key: 'actions',
+      width: 90,
       render: (_, record) => (
-        <Space>
-          <Button 
-            icon={<ReloadOutlined />} 
-            onClick={() => handleCheckUrl(record.id)}
-            size="small"
-            title="Check Now"
-          />
-          <Button 
-            icon={<EditOutlined />} 
-            onClick={() => handleEditUrl(record)}
-            size="small"
-          >
-            Edit
-          </Button>
-          <Popconfirm
-            title="Delete this URL?"
-            description="This will stop monitoring and remove the URL."
-            onConfirm={() => handleDeleteUrl(record.id)}
-            okText="Delete"
-            cancelText="Cancel"
-            okType="danger"
-          >
+        <Space size={2}>
+          <Tooltip title="Check Now">
             <Button 
-              icon={<DeleteOutlined />} 
-              danger 
+              icon={<ReloadOutlined />} 
+              onClick={() => handleCheckUrl(record.id)}
               size="small"
-            >
-              Delete
-            </Button>
+              type="text"
+              style={{ padding: '2px 4px' }}
+            />
+          </Tooltip>
+          <Tooltip title="Edit">
+            <Button 
+              icon={<EditOutlined />} 
+              onClick={() => handleEditUrl(record)}
+              size="small"
+              type="text"
+              style={{ padding: '2px 4px' }}
+            />
+          </Tooltip>
+          <Popconfirm
+            title="Delete URL?"
+            onConfirm={() => handleDeleteUrl(record.id)}
+            okText="Yes"
+            cancelText="No"
+          >
+            <Tooltip title="Delete">
+              <Button 
+                icon={<DeleteOutlined />} 
+                danger 
+                size="small"
+                type="text"
+                style={{ padding: '2px 4px' }}
+              />
+            </Tooltip>
           </Popconfirm>
         </Space>
       ),
@@ -281,7 +383,7 @@ const UrlMonitoring = () => {
     <div>
       {/* Statistics */}
       <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
-        <Col xs={24} sm={12} lg={6}>
+        <Col xs={12} sm={6}>
           <Card>
             <Statistic
               title="Total URLs"
@@ -290,7 +392,7 @@ const UrlMonitoring = () => {
             />
           </Card>
         </Col>
-        <Col xs={24} sm={12} lg={6}>
+        <Col xs={12} sm={6}>
           <Card>
             <Statistic
               title="URLs Up"
@@ -300,7 +402,7 @@ const UrlMonitoring = () => {
             />
           </Card>
         </Col>
-        <Col xs={24} sm={12} lg={6}>
+        <Col xs={12} sm={6}>
           <Card>
             <Statistic
               title="URLs Down"
@@ -310,7 +412,7 @@ const UrlMonitoring = () => {
             />
           </Card>
         </Col>
-        <Col xs={24} sm={12} lg={6}>
+        <Col xs={12} sm={6}>
           <Card>
             <Statistic
               title="Monitoring"
@@ -322,7 +424,7 @@ const UrlMonitoring = () => {
         </Col>
       </Row>
 
-      {/* URL Table */}
+      {/* URL Table with Filters */}
       <Card
         title={
           <Space>
@@ -354,14 +456,98 @@ const UrlMonitoring = () => {
           </Space>
         }
       >
+        {/* Filters */}
+        <Row gutter={[8, 8]} style={{ marginBottom: 12 }}>
+          <Col xs={24} sm={10}>
+            <Input
+              placeholder="Search URLs..."
+              prefix={<SearchOutlined />}
+              value={searchText}
+              onChange={(e) => setSearchText(e.target.value)}
+              allowClear
+              size="small"
+            />
+          </Col>
+          <Col xs={12} sm={4}>
+            <Select
+              placeholder="Status"
+              value={statusFilter}
+              onChange={setStatusFilter}
+              style={{ width: '100%' }}
+              size="small"
+            >
+              <Option value="all">All</Option>
+              <Option value="up">Up</Option>
+              <Option value="down">Down</Option>
+              <Option value="enabled">Enabled</Option>
+              <Option value="disabled">Disabled</Option>
+            </Select>
+          </Col>
+          <Col xs={12} sm={4}>
+            <Select
+              placeholder="Method"
+              value={methodFilter}
+              onChange={setMethodFilter}
+              style={{ width: '100%' }}
+              size="small"
+            >
+              <Option value="all">All</Option>
+              <Option value="GET">GET</Option>
+              <Option value="POST">POST</Option>
+              <Option value="PUT">PUT</Option>
+              <Option value="DELETE">DELETE</Option>
+            </Select>
+          </Col>
+          <Col xs={24} sm={6}>
+            <Text type="secondary" style={{ fontSize: '11px' }}>
+              {filteredUrls.length} of {urls.length} URLs
+            </Text>
+          </Col>
+        </Row>
+
+        {/* Alert for down URLs */}
+        {stats?.downUrls > 0 && (
+          <Alert
+            message={`${stats.downUrls} URL${stats.downUrls > 1 ? 's' : ''} down`}
+            type="warning"
+            showIcon
+            closable
+            style={{ marginBottom: 12, padding: '4px 12px', fontSize: '12px' }}
+            icon={<WarningOutlined />}
+          />
+        )}
+
         <Table
           columns={columns}
-          dataSource={urls}
+          dataSource={filteredUrls}
           loading={loading}
-          pagination={{ pageSize: 10 }}
+          pagination={{
+            pageSize: 20,
+            size: 'small',
+            showSizeChanger: true,
+            showQuickJumper: true,
+            showTotal: (total, range) => 
+              `${range[0]}-${range[1]} of ${total}`,
+            pageSizeOptions: ['10', '20', '50', '100']
+          }}
           rowKey="id"
           locale={{
-            emptyText: 'No URLs configured for monitoring'
+            emptyText: urls.length === 0 ? 
+              'No URLs configured' : 
+              'No URLs match filters'
+          }}
+          scroll={{ x: 600 }}
+          size="small"
+          style={{
+            '& .ant-table-tbody > tr > td': {
+              padding: '4px 8px',
+              fontSize: '12px'
+            },
+            '& .ant-table-thead > tr > th': {
+              padding: '6px 8px',
+              fontSize: '12px',
+              fontWeight: 'bold'
+            }
           }}
         />
       </Card>
