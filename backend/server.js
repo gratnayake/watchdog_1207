@@ -1768,36 +1768,33 @@ app.get('/api/database/check-privileges', async (req, res) => {
 app.post('/api/kubernetes/pods/:namespace/:podName/restart', async (req, res) => {
   try {
     const { namespace, podName } = req.params;
+    console.log(`🔄 Restart pod requested: ${namespace}/${podName}`);
     
-    // Validate parameters
-    if (!namespace || !podName) {
+    const config = kubernetesConfigService.getConfig();
+    if (!config.isConfigured) {
       return res.status(400).json({
         success: false,
-        error: 'Namespace and pod name are required'
+        error: 'Kubernetes not configured'
       });
     }
 
-    console.log(`🔄 Pod restart requested: ${namespace}/${podName}`);
-    
-    const result = await podActionsService.restartPod(namespace, podName);
+    // Delete the pod (it will be recreated by deployment)
+    const result = await podActionsService.deletePod(namespace, podName, false);
     
     if (result.success) {
       res.json({
         success: true,
-        message: result.message,
-        output: result.output,
-        method: result.method,
-        timestamp: result.timestamp
+        message: `Pod ${podName} restart initiated`,
+        data: result
       });
     } else {
       res.status(400).json({
         success: false,
-        error: result.message,
-        timestamp: result.timestamp
+        error: result.message || 'Failed to restart pod'
       });
     }
   } catch (error) {
-    console.error('❌ Pod restart error:', error);
+    console.error('❌ Restart pod error:', error);
     res.status(500).json({
       success: false,
       error: error.message
@@ -1947,33 +1944,33 @@ app.post('/api/kubernetes/deployments/:namespace/:deploymentName/scale', async (
   try {
     const { namespace, deploymentName } = req.params;
     const { replicas } = req.body;
-    console.log(`📏 Deployment scale requested: ${namespace}/${deploymentName} to ${replicas}`);
     
-    if (!replicas || replicas < 0) {
+    console.log(`📊 Scale deployment requested: ${namespace}/${deploymentName} to ${replicas} replicas`);
+    
+    const config = kubernetesConfigService.getConfig();
+    if (!config.isConfigured) {
       return res.status(400).json({
         success: false,
-        error: 'Invalid replica count'
+        error: 'Kubernetes not configured'
       });
     }
-    
+
     const result = await podActionsService.scaleDeployment(namespace, deploymentName, replicas);
     
     if (result.success) {
       res.json({
         success: true,
-        message: result.message,
-        output: result.output,
-        timestamp: result.timestamp
+        message: `Deployment ${deploymentName} scaled to ${replicas} replicas`,
+        data: result
       });
     } else {
       res.status(400).json({
         success: false,
-        error: result.message,
-        timestamp: result.timestamp
+        error: result.message || 'Failed to scale deployment'
       });
     }
   } catch (error) {
-    console.error('❌ Deployment scale error:', error);
+    console.error('❌ Scale deployment error:', error);
     res.status(500).json({
       success: false,
       error: error.message
@@ -2041,32 +2038,31 @@ app.get('/api/kubernetes/pods/:namespace/:podName/containers', async (req, res) 
 });
 
 // Get deployment info for pod
-app.get('/api/kubernetes/pods/:namespace/:podName/deployment', async (req, res) => {
-  try {
-    const { namespace, podName } = req.params;
-    console.log(`🚀 Pod deployment info requested: ${namespace}/${podName}`);
-    
-    const result = await podActionsService.getDeploymentInfo(namespace, podName);
-    
-    if (result.success) {
-      res.json({
-        success: true,
-        deployment: result.deployment
-      });
-    } else {
-      res.status(404).json({
+  app.get('/api/kubernetes/pods/:namespace/:podName/deployment', async (req, res) => {
+    try {
+      const { namespace, podName } = req.params;
+      
+      const deploymentInfo = await podActionsService.getDeploymentInfo(namespace, podName);
+      
+      if (deploymentInfo.success) {
+        res.json({
+          success: true,
+          data: deploymentInfo.deployment
+        });
+      } else {
+        res.status(404).json({
+          success: false,
+          error: deploymentInfo.message || 'Deployment info not found'
+        });
+      }
+    } catch (error) {
+      console.error('❌ Get deployment info error:', error);
+      res.status(500).json({
         success: false,
-        error: result.message
+        error: error.message
       });
     }
-  } catch (error) {
-    console.error('❌ Pod deployment info error:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
+  });
 
 app.get('/api/kubernetes/pods/enhanced', async (req, res) => {
   try {

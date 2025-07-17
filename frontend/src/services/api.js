@@ -323,7 +323,7 @@ restartPod: async (namespace, podName) => {
 
   scaleDeployment: async (namespace, deploymentName, replicas) => {
     const response = await api.post(`/api/kubernetes/deployments/${namespace}/${deploymentName}/scale`, {
-      replicas
+      replicas: replicas
     });
     return response.data;
   },

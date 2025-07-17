@@ -21,9 +21,13 @@ import {
   message,
   Dropdown,
   Tooltip,
-  Progress
+  Progress,
+  PoweroffOutlined,  
+  InputNumber,
+  Popconfirm 
 } from 'antd';
 import { 
+  ScissorOutlined,
   ReloadOutlined,
   DeleteOutlined,
   HistoryOutlined,
@@ -39,6 +43,9 @@ import {
   ExclamationCircleOutlined
 } from '@ant-design/icons';
 
+import { kubernetesAPI } from '../../services/api';
+import PodActions from './PodActions';
+
 const { Text, Title } = Typography;
 const { Option } = Select;
 
@@ -53,6 +60,11 @@ const EnhancedKubernetesMonitor = () => {
   const [historyModal, setHistoryModal] = useState({ visible: false, pod: null });
   const [changes, setChanges] = useState([]);
   const [namespaces, setNamespaces] = useState([]);
+  const [scaleModalVisible, setScaleModalVisible] = useState(false);
+  const [selectedPod, setSelectedPod] = useState(null);
+  const [newReplicaCount, setNewReplicaCount] = useState(1);
+  const [deploymentInfo, setDeploymentInfo] = useState(null);
+  const [actionLoading, setActionLoading] = useState(false);
 
   useEffect(() => {
     loadInitialData();
@@ -147,6 +159,120 @@ const EnhancedKubernetesMonitor = () => {
     message.info(`Viewing logs for ${pod.namespace}/${pod.name}`);
   };
 
+  // Helper function to extract deployment name
+const getDeploymentName = (podName) => {
+  const parts = podName.split('-');
+  if (parts.length >= 3) {
+    return parts.slice(0, -2).join('-');
+  }
+  return podName;
+};
+
+// Restart pod handler
+const handleRestartPod = async (pod) => {
+  try {
+    setActionLoading(true);
+    message.loading('Restarting pod...', 0);
+    
+    const result = await kubernetesAPI.restartPod(pod.namespace, pod.name);
+    
+    message.destroy();
+    if (result.success) {
+      message.success(`Pod ${pod.name} restart initiated`);
+      // Refresh pod list after 2 seconds
+      setTimeout(loadEnhancedPods, 2000);
+    } else {
+      message.error(`Failed to restart pod: ${result.error}`);
+    }
+  } catch (error) {
+    message.destroy();
+    console.error('Restart pod error:', error);
+    message.error(`Failed to restart pod: ${error.message}`);
+  } finally {
+    setActionLoading(false);
+  }
+};
+
+// Show scale modal
+const handleShowScaleModal = async (pod) => {
+  try {
+    setSelectedPod(pod);
+    
+    // Get deployment info to show current replica count
+    const result = await kubernetesAPI.getDeploymentInfo(pod.namespace, pod.name);
+    if (result.success) {
+      setDeploymentInfo(result.data);
+      setNewReplicaCount(result.data.currentReplicas || 1);
+    } else {
+      setNewReplicaCount(1);
+    }
+    setScaleModalVisible(true);
+  } catch (error) {
+    console.error('Get deployment info error:', error);
+    setNewReplicaCount(1);
+    setScaleModalVisible(true);
+  }
+};
+
+// Scale deployment handler
+const handleScaleDeployment = async () => {
+  if (!selectedPod) return;
+  
+  try {
+    setActionLoading(true);
+    message.loading(`Scaling deployment to ${newReplicaCount} replicas...`, 0);
+    
+    const deploymentName = getDeploymentName(selectedPod.name);
+    const result = await kubernetesAPI.scaleDeployment(
+      selectedPod.namespace, 
+      deploymentName, 
+      newReplicaCount
+    );
+    
+    message.destroy();
+    if (result.success) {
+      message.success(`Deployment scaled to ${newReplicaCount} replicas`);
+      setScaleModalVisible(false);
+      // Refresh pod list after 3 seconds
+      setTimeout(loadEnhancedPods, 3000);
+    } else {
+      message.error(`Failed to scale deployment: ${result.error}`);
+    }
+  } catch (error) {
+    message.destroy();
+    console.error('Scale deployment error:', error);
+    message.error(`Failed to scale deployment: ${error.message}`);
+  } finally {
+    setActionLoading(false);
+  }
+};
+
+// Stop deployment (scale to 0)
+const handleStopDeployment = async (pod) => {
+  try {
+    setActionLoading(true);
+    message.loading('Stopping deployment...', 0);
+    
+    const deploymentName = getDeploymentName(pod.name);
+    const result = await kubernetesAPI.scaleDeployment(pod.namespace, deploymentName, 0);
+    
+    message.destroy();
+    if (result.success) {
+      message.success(`Deployment ${deploymentName} stopped`);
+      // Refresh pod list after 3 seconds
+      setTimeout(loadEnhancedPods, 3000);
+    } else {
+      message.error(`Failed to stop deployment: ${result.error}`);
+    }
+  } catch (error) {
+    message.destroy();
+    console.error('Stop deployment error:', error);
+    message.error(`Failed to stop deployment: ${error.message}`);
+  } finally {
+    setActionLoading(false);
+  }
+};
+
   const handleDescribePod = (pod) => {
     if (pod.isDeleted) {
       message.warning('Cannot describe deleted pods');
@@ -180,33 +306,53 @@ const EnhancedKubernetesMonitor = () => {
 
   const getPodActionsMenu = (pod) => {
     const items = [
-      {
-        key: 'history',
-        label: 'View History',
-        icon: <HistoryOutlined />,
-        onClick: () => handleViewHistory(pod)
-      }
-    ];
-
-    if (!pod.isDeleted) {
-      items.unshift(
-        {
-          key: 'logs',
-          label: 'View Logs',
-          icon: <FileTextOutlined />,
-          onClick: () => handleViewLogs(pod)
-        },
-        {
-          key: 'describe',
-          label: 'Describe Pod',
-          icon: <InfoCircleOutlined />,
-          onClick: () => handleDescribePod(pod)
-        },
-        {
-          type: 'divider'
-        }
-      );
+    {
+      key: 'restart',
+      icon: <ReloadOutlined />,
+      label: 'Restart Pod',
+      onClick: () => handleRestartPod(pod)
+    },
+    {
+      key: 'scale',
+      icon: <ScissorOutlined />,
+      label: 'Scale Deployment',
+      onClick: () => handleShowScaleModal(pod)
+    },
+    {
+      type: 'divider'
+    },
+    {
+      key: 'logs',
+      icon: <FileTextOutlined />,
+      label: 'View Logs',
+      onClick: () => handleViewLogs(pod)
+    },
+    {
+      key: 'describe',
+      icon: <InfoCircleOutlined />,
+      label: 'Describe Pod',
+      onClick: () => handleDescribePod(pod)
+    },
+    {
+      type: 'divider'
+    },
+    {
+      key: 'stop',
+      label: (
+      <Popconfirm
+        title="Stop Deployment"
+        description="Are you sure you want to stop this deployment? All pods will be terminated."
+        onConfirm={() => handleStopDeployment(pod)}
+        okText="Yes, Stop"
+        cancelText="Cancel"
+        okButtonProps={{ danger: true }}
+      >
+        <span style={{ color: '#ff4d4f' }}>Stop Deployment</span>
+      </Popconfirm>
+    ),
+    danger: true
     }
+  ];   
 
     return { items };
   };
@@ -216,16 +362,16 @@ const EnhancedKubernetesMonitor = () => {
       title: 'Pod Details',
       key: 'details',
       width: 250,
-      render: (_, record) => (
+      render: (_, pod) => (
         <Space direction="vertical" size="small">
           <div>
-            <Text strong style={{ opacity: record.isDeleted ? 0.6 : 1 }}>
-              {record.name}
+            <Text strong style={{ opacity: pod.isDeleted ? 0.6 : 1 }}>
+              {pod.name}
             </Text>
-            {record.isDeleted && <Tag color="red" size="small">DELETED</Tag>}
+            {pod.isDeleted && <Tag color="red" size="small">DELETED</Tag>}
           </div>
           <Text type="secondary" style={{ fontSize: '12px' }}>
-            {record.namespace}
+            {pod.namespace}
           </Text>
         </Space>
       ),
@@ -234,18 +380,18 @@ const EnhancedKubernetesMonitor = () => {
       title: 'Status & Lifecycle',
       key: 'status',
       width: 180,
-      render: (_, record) => (
+      render: (_, pod) => (
         <Space direction="vertical" size="small">
           <div>
             <span style={{ marginRight: 8 }}>
-              {getLifecycleStageIcon(record.lifecycleStage)}
+              {getLifecycleStageIcon(pod.lifecycleStage)}
             </span>
-            <Tag color={getStatusColor(record.status, record.isDeleted)}>
-              {record.isDeleted ? 'DELETED' : record.status}
+            <Tag color={getStatusColor(pod.status, pod.isDeleted)}>
+              {pod.isDeleted ? 'DELETED' : pod.status}
             </Tag>
           </div>
           <Text type="secondary" style={{ fontSize: '11px' }}>
-            Duration: {record.statusDuration}
+            Duration: {pod.statusDuration}
           </Text>
         </Space>
       ),
@@ -254,24 +400,24 @@ const EnhancedKubernetesMonitor = () => {
       title: 'Timeline',
       key: 'timeline',
       width: 160,
-      render: (_, record) => (
+      render: (_, pod) => (
         <Space direction="vertical" size="small">
           <div>
             <Text style={{ fontSize: '11px' }}>
               <ClockCircleOutlined style={{ marginRight: 4 }} />
-              Created: {record.age} ago
+              Created: {pod.age} ago
             </Text>
           </div>
           <div>
             <Text style={{ fontSize: '11px' }}>
-              Last seen: {record.timeSinceLastSeen} ago
+              Last seen: {pod.timeSinceLastSeen} ago
             </Text>
           </div>
-          {record.isDeleted && (
+          {pod.isDeleted && (
             <div>
               <Text type="danger" style={{ fontSize: '11px' }}>
                 <DeleteOutlined style={{ marginRight: 4 }} />
-                Deleted: {new Date(record.deletedAt).toLocaleString()}
+                Deleted: {new Date(pod.deletedAt).toLocaleString()}
               </Text>
             </div>
           )}
@@ -312,19 +458,19 @@ const EnhancedKubernetesMonitor = () => {
       title: 'Actions',
       key: 'actions',
       width: 100,
-      render: (_, record) => (
+      render: (_, pod) => (
         <Space size="small">
           <Tooltip title="View History">
             <Button
               type="text"
               icon={<HistoryOutlined />}
               size="small"
-              onClick={() => handleViewHistory(record)}
+              onClick={() => handleViewHistory(pod)}
             />
           </Tooltip>
-          {!record.isDeleted && (
+          {!pod.isDeleted && (
             <Dropdown
-              menu={getPodActionsMenu(record)}
+              menu={getPodActionsMenu(pod)}
               trigger={['click']}
               placement="bottomRight"
             >
@@ -502,7 +648,7 @@ const EnhancedKubernetesMonitor = () => {
         <Table
           columns={enhancedColumns}
           dataSource={pods}
-          rowKey={(record) => `${record.namespace}-${record.name}-${record.firstSeen}`}
+          rowKey={(pod) => `${pod.namespace}-${pod.name}-${pod.firstSeen}`}
           loading={loading}
           pagination={{
             pageSize: 20,
@@ -511,8 +657,8 @@ const EnhancedKubernetesMonitor = () => {
             showTotal: (total, range) => 
               `${range[0]}-${range[1]} of ${total} pods`,
           }}
-          rowClassName={(record) => 
-            record.isDeleted ? 'deleted-pod-row' : ''
+          rowClassName={(pod) => 
+            pod.isDeleted ? 'deleted-pod-row' : ''
           }
           scroll={{ x: 1200 }}
         />
@@ -615,6 +761,47 @@ const EnhancedKubernetesMonitor = () => {
               />
             </Card>
           </div>
+        )}
+      </Modal>
+
+      <Modal
+        title={
+          <Space>
+            <ScissorOutlined />
+            Scale Deployment
+          </Space>
+        }
+        open={scaleModalVisible}
+        onCancel={() => setScaleModalVisible(false)}
+        onOk={handleScaleDeployment}
+        confirmLoading={actionLoading}
+        okText="Scale"
+      >
+        {selectedPod && (
+          <Space direction="vertical" style={{ width: '100%' }} size="large">
+            <div>
+              <p><strong>Pod:</strong> {selectedPod.name}</p>
+              <p><strong>Namespace:</strong> {selectedPod.namespace}</p>
+              <p><strong>Deployment:</strong> {getDeploymentName(selectedPod.name)}</p>
+              {deploymentInfo && (
+                <p><strong>Current Replicas:</strong> {deploymentInfo.currentReplicas}</p>
+              )}
+            </div>
+
+            <div>
+              <p><strong>New Replica Count:</strong></p>
+              <InputNumber
+                min={0}
+                max={20}
+                value={newReplicaCount}
+                onChange={setNewReplicaCount}
+                style={{ width: '100%' }}
+              />
+              <p style={{ fontSize: '12px', color: '#666', marginTop: '8px' }}>
+                Set to 0 to stop all pods, or increase to scale up
+              </p>
+            </div>
+          </Space>
         )}
       </Modal>
 
