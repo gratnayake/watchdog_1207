@@ -15,6 +15,7 @@ const databaseOperationsService = require('./services/databaseOperationsService'
 const podActionsService = require('./services/podActionsService');
 const kubernetesMonitoringService = require('./services/kubernetesMonitoringService');
 const podLifecycleService = require('./services/podLifecycleService');
+const scriptService = require('./services/scriptService');
 
 
 const { exec } = require('child_process');
@@ -2245,6 +2246,54 @@ app.post('/api/kubernetes/pods/cleanup', async (req, res) => {
   }
 });
 
+// SCRIPT MANAGEMENT ROUTES
+app.get('/api/scripts', (req, res) => {
+  try {
+    const scripts = scriptService.getAllScripts();
+    res.json({ success: true, data: scripts });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/scripts', (req, res) => {
+  try {
+    const newScript = scriptService.addScript(req.body);
+    if (newScript) {
+      res.json({ success: true, data: newScript });
+    } else {
+      res.status(500).json({ success: false, error: 'Failed to save script' });
+    }
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.put('/api/scripts/:id', (req, res) => {
+  try {
+    const updatedScript = scriptService.updateScript(req.params.id, req.body);
+    if (updatedScript) {
+      res.json({ success: true, data: updatedScript });
+    } else {
+      res.status(404).json({ success: false, error: 'Script not found' });
+    }
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.delete('/api/scripts/:id', (req, res) => {
+  try {
+    const deleted = scriptService.deleteScript(req.params.id);
+    if (deleted) {
+      res.json({ success: true, message: 'Script deleted successfully' });
+    } else {
+      res.status(404).json({ success: false, error: 'Script not found' });
+    }
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 
 
 // Error handling middleware

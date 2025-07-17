@@ -478,4 +478,31 @@ export const databaseOperationsAPI = {
   }
 };
 
+
+export const scriptAPI = {
+  // Get all scripts from backend
+  getAllScripts: async () => {
+    const response = await api.get('/api/scripts');
+    return response.data;
+  },
+
+  // Add new script to backend
+  addScript: async (scriptData) => {
+    const response = await api.post('/api/scripts', scriptData);
+    return response.data;
+  },
+
+  // Update existing script
+  updateScript: async (scriptId, scriptData) => {
+    const response = await api.put(`/api/scripts/${scriptId}`, scriptData);
+    return response.data;
+  },
+
+  // Delete script
+  deleteScript: async (scriptId) => {
+    const response = await api.delete(`/api/scripts/${scriptId}`);
+    return response.data;
+  }
+};
+
 export default api;

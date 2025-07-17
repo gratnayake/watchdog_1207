@@ -33,6 +33,7 @@ import {
   ThunderboltOutlined,
   WarningOutlined
 } from '@ant-design/icons';
+import { scriptAPI, simpleScriptAPI, databaseOperationsAPI } from '../../services/api';
 
 const { Title, Text } = Typography;
 const { Option } = Select;
@@ -320,24 +321,59 @@ const SimpleScriptManager = () => {
     );
   };
 
-  const loadScripts = () => {
+  const loadScripts = async () => {
     try {
-      const saved = localStorage.getItem('simpleScripts');
-      if (saved) {
-        setScripts(JSON.parse(saved));
+      setLoading(true);
+      const response = await scriptAPI.getAllScripts();
+      if (response.success) {
+        setScripts(response.data);
       }
     } catch (error) {
       console.error('Failed to load scripts:', error);
+      message.error('Failed to load scripts from server');
+    } finally {
+      setLoading(false);
     }
   };
 
-  const saveScripts = (scriptList) => {
+  // Remove the old saveScripts function entirely and replace handleSaveScript with:
+  const handleSaveScript = async () => {
+    if (!form.name || !form.scriptPath) {
+      message.error('Please fill in script name and path');
+      return;
+    }
+
     try {
-      localStorage.setItem('simpleScripts', JSON.stringify(scriptList));
-      setScripts(scriptList);
+      setLoading(true);
+
+      const scriptData = {
+        name: form.name,
+        description: form.description,
+        scriptPath: form.scriptPath,
+        arguments: form.arguments
+      };
+
+      let response;
+      if (editingScript) {
+        // Update existing script
+        response = await scriptAPI.updateScript(editingScript.id, scriptData);
+      } else {
+        // Add new script
+        response = await scriptAPI.addScript(scriptData);
+      }
+
+      if (response.success) {
+        message.success(editingScript ? 'Script updated successfully' : 'Script added successfully');
+        setModalVisible(false);
+        await loadScripts(); // Reload scripts from backend
+      } else {
+        message.error('Failed to save script');
+      }
     } catch (error) {
-      console.error('Failed to save scripts:', error);
-      message.error('Failed to save scripts');
+      console.error('Save script error:', error);
+      message.error(`Failed to save script: ${error.message}`);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -345,8 +381,6 @@ const SimpleScriptManager = () => {
     setOutputModal({ visible: true, script, output: '', loading: true });
     
     try {
-      const { simpleScriptAPI } = await import('../../services/api');
-      
       const result = await simpleScriptAPI.executeScript({
         name: script.name,
         scriptPath: script.scriptPath,
@@ -359,12 +393,8 @@ const SimpleScriptManager = () => {
         loading: false
       }));
       
-      const updatedScripts = scripts.map(s => 
-        s.id === script.id 
-          ? { ...s, lastRun: new Date().toISOString() }
-          : s
-      );
-      saveScripts(updatedScripts);
+      // Reload scripts to get updated lastRunAt from backend
+      await loadScripts();
       
       if (result.kubeconfigUsed) {
         message.success('Script executed successfully with KUBECONFIG');
@@ -403,39 +433,20 @@ const SimpleScriptManager = () => {
     setModalVisible(true);
   };
 
-  const handleSaveScript = () => {
-    if (!form.name || !form.scriptPath) {
-      message.error('Please fill in script name and path');
-      return;
-    }
-
-    const newScript = {
-      id: editingScript ? editingScript.id : Date.now(),
-      name: form.name,
-      description: form.description,
-      scriptPath: form.scriptPath,
-      arguments: form.arguments,
-      createdAt: editingScript ? editingScript.createdAt : new Date().toISOString(),
-      lastRun: null
-    };
-
-    let updatedScripts;
-    if (editingScript) {
-      updatedScripts = scripts.map(s => s.id === editingScript.id ? newScript : s);
+  const handleDeleteScript = async (scriptId) => {
+  try {
+    const response = await scriptAPI.deleteScript(scriptId);
+    if (response.success) {
+      message.success('Script deleted successfully');
+      await loadScripts(); // Reload scripts from backend
     } else {
-      updatedScripts = [...scripts, newScript];
+      message.error('Failed to delete script');
     }
-
-    saveScripts(updatedScripts);
-    setModalVisible(false);
-    message.success(editingScript ? 'Script updated successfully' : 'Script added successfully');
-  };
-
-  const handleDeleteScript = (scriptId) => {
-    const updatedScripts = scripts.filter(s => s.id !== scriptId);
-    saveScripts(updatedScripts);
-    message.success('Script deleted successfully');
-  };
+  } catch (error) {
+    console.error('Delete script error:', error);
+    message.error(`Failed to delete script: ${error.message}`);
+  }
+};
 
   const handleQuickArgument = (value) => {
     setForm(prev => ({ ...prev, arguments: value }));
