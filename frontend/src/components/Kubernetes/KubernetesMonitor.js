@@ -397,6 +397,90 @@ const handleStopDeployment = async (pod) => {
       ),
     },
     {
+      title: 'Ready',
+      key: 'ready',
+      width: 100,
+      render: (_, record) => {
+        const readyCount = record.containers ? 
+          record.containers.filter(c => c.ready).length : 
+          (record.ready ? 1 : 0);
+        
+        const totalCount = record.containers ? 
+          record.containers.length : 1;
+
+        const getTagColor = () => {
+          if (record.isDeleted) return 'default';
+          if (readyCount === totalCount) return 'success';
+          if (readyCount > 0) return 'warning';
+          return 'error';
+        };
+
+        const getReadinessColor = () => {
+          if (record.isDeleted) return '#8c8c8c';
+          if (readyCount === totalCount) return '#52c41a';
+          if (readyCount > 0) return '#fa8c16';
+          return '#ff4d4f';
+        };
+
+        // Create tooltip content showing container details
+        const tooltipContent = record.containers ? (
+          <div>
+            <div style={{ marginBottom: 8, fontWeight: 'bold' }}>
+              Container Status:
+            </div>
+            {record.containers.map((container, index) => (
+              <div key={index} style={{ marginBottom: 4 }}>
+                <span style={{ 
+                  color: container.ready ? '#52c41a' : '#ff4d4f',
+                  marginRight: 8 
+                }}>
+                  {container.ready ? '✓' : '✗'}
+                </span>
+                <span>{container.name}</span>
+                {!container.ready && (
+                  <span style={{ color: '#ff4d4f', marginLeft: 8 }}>
+                    (Not Ready)
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div>
+            <div>Single container pod</div>
+            <div>Status: {record.ready ? 'Ready' : 'Not Ready'}</div>
+          </div>
+        );
+
+        return (
+          <Tooltip title={tooltipContent} placement="topRight">
+            <Space direction="vertical" size={2} align="center">
+              <Tag 
+                color={getTagColor()}
+                style={{ 
+                  minWidth: '50px', 
+                  textAlign: 'center',
+                  fontWeight: 'bold',
+                  cursor: 'pointer'
+                }}
+              >
+                {readyCount}/{totalCount}
+              </Tag>
+              {totalCount > 1 && (
+                <Progress
+                  percent={(readyCount / totalCount) * 100}
+                  size="small"
+                  strokeColor={getReadinessColor()}
+                  showInfo={false}
+                  style={{ margin: 0, width: '45px' }}
+                />
+              )}
+            </Space>
+          </Tooltip>
+        );
+      },
+    },
+    {
       title: 'Timeline',
       key: 'timeline',
       width: 160,
