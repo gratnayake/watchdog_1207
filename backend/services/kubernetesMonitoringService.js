@@ -1,4 +1,4 @@
-// backend/services/kubernetesMonitoringService.js - Enhanced Workload Monitoring
+// backend/services/kubernetesMonitoringService.js - Enhanced Workload Monitoring with Batch Alerts
 const cron = require('node-cron');
 const emailService = require('./emailService');
 const kubernetesService = require('./kubernetesService');
@@ -13,10 +13,19 @@ class KubernetesMonitoringService {
     this.isMonitoring = false;
     this.checkInterval = null;
     
+    // Batch alert system
+    this.pendingAlerts = {
+      failed: [],
+      degraded: [],
+      recovered: []
+    };
+    this.alertBatchTimeout = null;
+    this.batchDelayMs = 30000; // Wait 30 seconds before sending batch
+    
     // Check every 2 minutes
     this.checkFrequency = '*/2 * * * *';
     
-    console.log('☸️ Kubernetes Monitoring Service initialized (Workload-based)');
+    console.log('☸️ Kubernetes Monitoring Service initialized (Workload-based with Batch Alerts)');
   }
 
   // Keep existing method signatures for compatibility
@@ -32,7 +41,7 @@ class KubernetesMonitoringService {
       return false;
     }
 
-    console.log(`☸️ Starting Kubernetes monitoring (workload-based, checking every 2 minutes)`);
+    console.log(`☸️ Starting Kubernetes monitoring (workload-based with batch alerts, checking every 2 minutes)`);
     
     this.checkInterval = cron.schedule(this.checkFrequency, async () => {
       await this.checkPodHealth(); // Keep method name but change implementation
@@ -66,6 +75,9 @@ class KubernetesMonitoringService {
       this.checkInterval = null;
     }
     
+    // Clear any pending batch alerts
+    this.clearPendingAlerts();
+    
     this.isMonitoring = false;
     return true;
   }
@@ -76,6 +88,7 @@ class KubernetesMonitoringService {
       podCount: this.getTotalPodCount(), // Calculate from workloads
       nodeCount: this.nodeStatuses.size,
       workloadCount: this.workloadStatuses.size,
+      pendingAlerts: this.getTotalPendingAlerts(),
       lastCheck: new Date()
     };
   }
@@ -236,51 +249,88 @@ class KubernetesMonitoringService {
     const currentHealthyPods = current.pods.filter(p => p.ready && p.status === 'Running').length;
     const previousHealthyPods = previous.pods ? previous.pods.filter(p => p.ready && p.status === 'Running').length : 0;
 
-    // Alert only if healthy pod count drops significantly
+    // Collect alerts instead of sending immediately
     if (currentHealthyPods < previousHealthyPods && currentHealthyPods < current.desiredReplicas) {
       console.log(`🚨 Workload degraded: ${workloadKey} (${currentHealthyPods}/${current.desiredReplicas} healthy)`);
-      await this.sendWorkloadAlert(current, 'degraded', emailGroupId);
+      this.addToBatchAlert('degraded', current, emailGroupId);
     }
 
-    // Alert on complete failures
     if (currentHealthyPods === 0 && current.desiredReplicas > 0 && previousHealthyPods > 0) {
       console.log(`💥 Workload failed: ${workloadKey}`);
-      await this.sendWorkloadAlert(current, 'failed', emailGroupId);
+      this.addToBatchAlert('failed', current, emailGroupId);
     }
 
-    // Alert on recovery
     if (currentHealthyPods === current.desiredReplicas && previousHealthyPods < previous.desiredReplicas) {
       console.log(`✅ Workload recovered: ${workloadKey}`);
-      await this.sendWorkloadAlert(current, 'recovered', emailGroupId);
+      this.addToBatchAlert('recovered', current, emailGroupId);
     }
   }
 
-  async sendWorkloadAlert(workload, alertType, emailGroupId) {
+  // New method to collect alerts for batching
+  addToBatchAlert(alertType, workload, emailGroupId) {
     if (!emailGroupId) {
       console.log('⚠️ No email group configured for workload alerts');
-      return false;
+      return;
     }
 
-    const alertKey = `${workload.type}/${workload.name}/${workload.namespace}/${alertType}`;
-    const now = new Date();
-    const lastAlert = this.emailSentStatus.get(alertKey);
+    // Add to pending alerts
+    this.pendingAlerts[alertType].push({
+      workload: workload,
+      timestamp: new Date(),
+      emailGroupId: emailGroupId
+    });
 
-    // Prevent duplicate alerts within 10 minutes
-    if (lastAlert && (now - lastAlert) < 10 * 60 * 1000) {
-      return false;
+    console.log(`📝 Added ${alertType} alert for ${workload.name} to batch (${this.getTotalPendingAlerts()} total pending)`);
+
+    // Schedule batch send (or reset timer if already scheduled)
+    this.scheduleBatchAlert(emailGroupId);
+  }
+
+  // Get total pending alerts count
+  getTotalPendingAlerts() {
+    return this.pendingAlerts.failed.length + 
+           this.pendingAlerts.degraded.length + 
+           this.pendingAlerts.recovered.length;
+  }
+
+  // Schedule batch alert sending
+  scheduleBatchAlert(emailGroupId) {
+    // Clear existing timeout
+    if (this.alertBatchTimeout) {
+      clearTimeout(this.alertBatchTimeout);
     }
 
+    // Schedule new batch send
+    this.alertBatchTimeout = setTimeout(async () => {
+      await this.sendBatchAlert(emailGroupId);
+    }, this.batchDelayMs);
+
+    console.log(`⏰ Batch alert scheduled to send in ${this.batchDelayMs/1000} seconds`);
+  }
+
+  // Send consolidated batch alert
+  async sendBatchAlert(emailGroupId) {
     try {
+      const totalAlerts = this.getTotalPendingAlerts();
+      
+      if (totalAlerts === 0) {
+        console.log('📧 No pending alerts to send');
+        return;
+      }
+
+      console.log(`📧 Sending batch alert with ${totalAlerts} workload changes...`);
+
       const groups = emailService.getEmailGroups();
       const targetGroup = groups.find(g => g.id === emailGroupId && g.enabled);
       
       if (!targetGroup || targetGroup.emails.length === 0) {
-        console.log('⚠️ No valid email group found for workload alerts');
-        return false;
+        console.log('⚠️ No valid email group found for batch alerts');
+        this.clearPendingAlerts();
+        return;
       }
 
-      const subject = this.getAlertSubject(workload, alertType);
-      const htmlContent = this.getAlertContent(workload, alertType, targetGroup.name);
+      const subject = this.getBatchAlertSubject();
+      const htmlContent = this.getBatchAlertContent(targetGroup.name);
 
       const mailOptions = {
         from: emailService.getEmailConfig().user,
@@ -290,78 +340,144 @@ class KubernetesMonitoringService {
       };
 
       await emailService.transporter.sendMail(mailOptions);
-      this.emailSentStatus.set(alertKey, now);
       
-      console.log(`📧 ✅ Workload ${alertType} alert sent for ${workload.name}`);
-      return true;
+      console.log(`📧 ✅ Batch alert sent successfully with ${totalAlerts} workload changes`);
+      
+      // Clear pending alerts after successful send
+      this.clearPendingAlerts();
 
     } catch (error) {
-      console.error(`📧 ❌ Failed to send workload alert:`, error);
-      return false;
+      console.error(`📧 ❌ Failed to send batch alert:`, error);
+      // Don't clear alerts on failure - they'll be retried next cycle
     }
   }
 
-  getAlertSubject(workload, alertType) {
-    const typeEmoji = {
-      'degraded': '⚠️',
-      'failed': '🚨',
-      'recovered': '✅'
-    };
-
-    return `${typeEmoji[alertType]} Kubernetes ${workload.type}: ${workload.name} ${alertType.toUpperCase()}`;
+  // Generate batch alert subject
+  getBatchAlertSubject() {
+    const failed = this.pendingAlerts.failed.length;
+    const degraded = this.pendingAlerts.degraded.length;
+    const recovered = this.pendingAlerts.recovered.length;
+    
+    if (failed > 0) {
+      return `🚨 Kubernetes Alert: ${failed} workload${failed > 1 ? 's' : ''} failed, ${degraded} degraded, ${recovered} recovered`;
+    } else if (degraded > 0) {
+      return `⚠️ Kubernetes Alert: ${degraded} workload${degraded > 1 ? 's' : ''} degraded, ${recovered} recovered`;
+    } else if (recovered > 0) {
+      return `✅ Kubernetes Recovery: ${recovered} workload${recovered > 1 ? 's' : ''} recovered`;
+    }
+    
+    return '☸️ Kubernetes Workload Status Update';
   }
 
-  getAlertContent(workload, alertType, groupName) {
-    const statusColor = {
-      'degraded': '#ff7f00',
-      'failed': '#dc3545',
-      'recovered': '#28a745'
-    };
+  // Generate batch alert content
+  getBatchAlertContent(groupName) {
+    const now = new Date();
+    const failed = this.pendingAlerts.failed;
+    const degraded = this.pendingAlerts.degraded;
+    const recovered = this.pendingAlerts.recovered;
+    
+    const totalChanges = failed.length + degraded.length + recovered.length;
 
     return `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <div style="background-color: ${statusColor[alertType]}; color: white; padding: 20px; text-align: center;">
-          <h1 style="margin: 0; font-size: 24px;">☸️ KUBERNETES WORKLOAD ALERT</h1>
+      <div style="font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto;">
+        <div style="background-color: ${failed.length > 0 ? '#dc3545' : degraded.length > 0 ? '#ff7f00' : '#28a745'}; color: white; padding: 20px; text-align: center;">
+          <h1 style="margin: 0; font-size: 24px;">☸️ KUBERNETES BATCH ALERT</h1>
+          <p style="margin: 8px 0 0 0; font-size: 16px;">${totalChanges} workload changes detected</p>
         </div>
         
-        <div style="background-color: #f8f9fa; padding: 20px; border-left: 5px solid ${statusColor[alertType]};">
-          <h2 style="color: ${statusColor[alertType]}; margin-top: 0;">${workload.type}: ${alertType.toUpperCase()}</h2>
-          
-          <table style="width: 100%; border-collapse: collapse; margin: 15px 0;">
-            <tr>
-              <td style="padding: 8px; font-weight: bold; width: 30%;">Workload:</td>
-              <td style="padding: 8px;">${workload.type}/${workload.name}</td>
-            </tr>
-            <tr style="background-color: #ffffff;">
-              <td style="padding: 8px; font-weight: bold;">Namespace:</td>
-              <td style="padding: 8px;">${workload.namespace}</td>
-            </tr>
-            <tr>
-              <td style="padding: 8px; font-weight: bold;">Status:</td>
-              <td style="padding: 8px; color: ${statusColor[alertType]};">${workload.status.toUpperCase()}</td>
-            </tr>
-            <tr style="background-color: #ffffff;">
-              <td style="padding: 8px; font-weight: bold;">Healthy Pods:</td>
-              <td style="padding: 8px;">${workload.readyReplicas}/${workload.desiredReplicas}</td>
-            </tr>
-          </table>
-          
-          <div style="background-color: #fff3cd; border: 1px solid #ffeaa7; padding: 15px; margin: 15px 0; border-radius: 4px;">
-            <h3 style="margin-top: 0; color: #856404;">📋 Pod Details</h3>
+        <div style="background-color: #f8f9fa; padding: 20px;">
+          <h2 style="margin-top: 0; color: #333;">Summary</h2>
+          <div style="display: flex; justify-content: space-around; margin: 20px 0;">
+            <div style="text-align: center; padding: 15px; background: white; border-radius: 8px; min-width: 80px;">
+              <div style="font-size: 24px; font-weight: bold; color: #dc3545;">${failed.length}</div>
+              <div style="font-size: 12px; color: #666;">Failed</div>
+            </div>
+            <div style="text-align: center; padding: 15px; background: white; border-radius: 8px; min-width: 80px;">
+              <div style="font-size: 24px; font-weight: bold; color: #ff7f00;">${degraded.length}</div>
+              <div style="font-size: 12px; color: #666;">Degraded</div>
+            </div>
+            <div style="text-align: center; padding: 15px; background: white; border-radius: 8px; min-width: 80px;">
+              <div style="font-size: 24px; font-weight: bold; color: #28a745;">${recovered.length}</div>
+              <div style="font-size: 12px; color: #666;">Recovered</div>
+            </div>
+          </div>
+
+          ${this.generateAlertSection('🚨 Failed Workloads', failed, '#dc3545')}
+          ${this.generateAlertSection('⚠️ Degraded Workloads', degraded, '#ff7f00')}
+          ${this.generateAlertSection('✅ Recovered Workloads', recovered, '#28a745')}
+
+          <div style="background-color: #fff3cd; border: 1px solid #ffeaa7; padding: 15px; margin: 20px 0; border-radius: 4px;">
+            <h3 style="margin-top: 0; color: #856404;">📋 Recommended Actions</h3>
             <ul style="color: #856404; margin: 10px 0;">
-              ${workload.pods.map(pod => 
-                `<li><strong>${pod.name}:</strong> ${pod.status} (${pod.ready ? 'Ready' : 'Not Ready'}) - ${pod.restarts} restarts</li>`
-              ).join('')}
+              ${failed.length > 0 ? '<li><strong>Failed workloads:</strong> Check logs and restart if necessary</li>' : ''}
+              ${degraded.length > 0 ? '<li><strong>Degraded workloads:</strong> Monitor for auto-recovery or manual intervention</li>' : ''}
+              ${recovered.length > 0 ? '<li><strong>Recovered workloads:</strong> Verify functionality and monitor stability</li>' : ''}
+              <li>Access your monitoring dashboard for real-time status</li>
+              <li>Use kubectl or MTCTL for manual intervention if needed</li>
             </ul>
           </div>
         </div>
         
         <div style="background-color: #e9ecef; padding: 15px; text-align: center; font-size: 12px; color: #6c757d;">
           <p style="margin: 0;">Alert sent to: ${groupName}</p>
+          <p style="margin: 5px 0 0 0;">Generated at: ${now.toLocaleString()}</p>
           <p style="margin: 5px 0 0 0;">Kubernetes Workload Monitoring System</p>
         </div>
       </div>
     `;
+  }
+
+  // Generate section for each alert type
+  generateAlertSection(title, alerts, color) {
+    if (alerts.length === 0) return '';
+
+    return `
+      <div style="margin: 20px 0;">
+        <h3 style="color: ${color}; margin-bottom: 15px;">${title}</h3>
+        <table style="width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden;">
+          <thead>
+            <tr style="background-color: ${color}; color: white;">
+              <th style="padding: 12px; text-align: left;">Workload</th>
+              <th style="padding: 12px; text-align: left;">Namespace</th>
+              <th style="padding: 12px; text-align: left;">Status</th>
+              <th style="padding: 12px; text-align: left;">Pods</th>
+              <th style="padding: 12px; text-align: left;">Time</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${alerts.map((alert, index) => `
+              <tr style="background-color: ${index % 2 === 0 ? '#f8f9fa' : 'white'};">
+                <td style="padding: 12px; font-weight: bold;">${alert.workload.name}</td>
+                <td style="padding: 12px;">${alert.workload.namespace}</td>
+                <td style="padding: 12px;">
+                  <span style="background: ${color}; color: white; padding: 4px 8px; border-radius: 4px; font-size: 11px;">
+                    ${alert.workload.status.toUpperCase()}
+                  </span>
+                </td>
+                <td style="padding: 12px;">${alert.workload.readyReplicas}/${alert.workload.desiredReplicas}</td>
+                <td style="padding: 12px; font-size: 11px; color: #666;">${alert.timestamp.toLocaleTimeString()}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  // Clear pending alerts
+  clearPendingAlerts() {
+    this.pendingAlerts = {
+      failed: [],
+      degraded: [],
+      recovered: []
+    };
+    
+    if (this.alertBatchTimeout) {
+      clearTimeout(this.alertBatchTimeout);
+      this.alertBatchTimeout = null;
+    }
+    
+    console.log('🗑️ Cleared all pending alerts');
   }
 
   cleanupDeletedWorkloads(currentWorkloads) {
