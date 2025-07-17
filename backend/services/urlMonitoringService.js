@@ -316,9 +316,17 @@ async handleUrlDown(urlConfig, result) {
 async handleUrlUp(urlConfig, result) {
   const urlId = urlConfig.id;
   console.log(`✅ URL UP: ${urlConfig.name}`);
+  console.log('🔍 DEBUG: handleUrlUp called for URL:', {
+    id: urlConfig.id,
+    name: urlConfig.name,
+    url: urlConfig.url,
+    emailGroupId: urlConfig.emailGroupId
+  });
   
   // Calculate downtime
   const downtimeInfo = this.urlDowntimes.get(urlId);
+  console.log('🔍 DEBUG: Downtime info found:', downtimeInfo ? 'YES' : 'NO');
+  
   let downtime = 'Unknown';
   
   if (downtimeInfo) {
@@ -326,29 +334,42 @@ async handleUrlUp(urlConfig, result) {
     const minutes = Math.floor(downtimeMs / 60000);
     const seconds = Math.floor((downtimeMs % 60000) / 1000);
     downtime = `${minutes}m ${seconds}s`;
+    console.log('🔍 DEBUG: Calculated downtime:', downtime);
   }
   
-  // Send recovery email
+  // Send recovery email - this is where the fix happens
+  console.log('📧 DEBUG: About to send URL UP alert...');
+  console.log('📧 DEBUG: urlConfig.emailGroupId:', urlConfig.emailGroupId);
+  
   try {
     const emailSent = await this.sendUrlUpAlert(urlConfig, downtime);
+    console.log('📧 DEBUG: sendUrlUpAlert returned:', emailSent);
+    
     if (emailSent) {
-      console.log('📧 URL recovery alert email sent successfully');
+      console.log('📧 ✅ URL recovery alert email sent successfully');
+    } else {
+      console.log('❌ Failed to send URL recovery alert email');
     }
   } catch (emailError) {
     console.error('❌ Error sending URL recovery alert:', emailError);
+    console.error('❌ Email error stack:', emailError.stack);
   }
   
   // Clean up tracking
+  console.log('🔍 DEBUG: Cleaning up tracking for URL ID:', urlId);
   this.urlDowntimes.delete(urlId);
   this.emailSentStatus.delete(urlId);
   
   // Log recovery event
+  const logService = require('./logService');
   logService.logDowntimeEnd(`URL_${urlId}`, {
     type: 'URL_UP',
     urlName: urlConfig.name,
     url: urlConfig.url,
     downtime: downtime
   });
+  
+  console.log('🔍 DEBUG: handleUrlUp complete');
 }
 
 async sendUrlDownAlert(urlConfig, result) {
@@ -431,17 +452,30 @@ async sendUrlDownAlert(urlConfig, result) {
 
 async sendUrlUpAlert(urlConfig, downtime) {
   try {
-    const allEmails = emailService.getAllEnabledEmails();
+    console.log('📧 DEBUG: Starting sendUrlUpAlert for:', urlConfig.name);
+    console.log('📧 DEBUG: URL config emailGroupId:', urlConfig.emailGroupId);
     
-    if (allEmails.length === 0) {
-      console.log('⚠️ No email addresses configured for URL alerts');
+    // Use the SAME logic as sendUrlDownAlert - this was the problem!
+    const emailService = require('./emailService');
+    const groups = emailService.getEmailGroups();
+    console.log('📧 DEBUG: Available email groups:', groups.length);
+    
+    const targetGroup = groups.find(g => g.id === urlConfig.emailGroupId && g.enabled);
+    console.log('📧 DEBUG: Target group found:', targetGroup ? targetGroup.name : 'NONE');
+    
+    if (!targetGroup || targetGroup.emails.length === 0) {
+      console.log('⚠️ No valid email group configured for URL UP alerts:', urlConfig.name);
+      console.log('📧 DEBUG: emailGroupId:', urlConfig.emailGroupId);
+      console.log('📧 DEBUG: Available groups:', groups.map(g => `${g.id}:${g.name}(${g.enabled})`));
       return false;
     }
+
+    console.log('📧 DEBUG: Sending UP alert to emails:', targetGroup.emails);
 
     const currentTime = new Date();
     const mailOptions = {
       from: emailService.getEmailConfig().user,
-      to: allEmails.join(','),
+      to: targetGroup.emails.join(','),
       subject: `✅ RESOLVED: URL is ONLINE - ${urlConfig.name}`,
       html: `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
@@ -473,6 +507,10 @@ async sendUrlUpAlert(urlConfig, downtime) {
                 <td style="padding: 8px; font-weight: bold;">Total Downtime:</td>
                 <td style="padding: 8px; color: #dc3545; font-weight: bold;">${downtime}</td>
               </tr>
+              <tr style="background-color: #ffffff;">
+                <td style="padding: 8px; font-weight: bold;">Alert Group:</td>
+                <td style="padding: 8px;">${targetGroup.name}</td>
+              </tr>
             </table>
             
             <div style="background-color: #d1ecf1; border: 1px solid #bee5eb; padding: 15px; margin: 15px 0; border-radius: 4px;">
@@ -486,21 +524,22 @@ async sendUrlUpAlert(urlConfig, downtime) {
           </div>
           
           <div style="background-color: #e9ecef; padding: 15px; text-align: center; font-size: 12px; color: #6c757d;">
-            <p style="margin: 0;">This is an automated recovery notification from Uptime WatchDog</p>
-            <p style="margin: 5px 0 0 0;">Monitoring will continue automatically</p>
+            <p style="margin: 0;">This alert was sent to: ${targetGroup.name}</p>
+            <p style="margin: 5px 0 0 0;">This is an automated recovery notification from Uptime WatchDog</p>
           </div>
         </div>
       `
     };
 
     await emailService.transporter.sendMail(mailOptions);
+    console.log('📧 ✅ URL UP alert email sent successfully to:', targetGroup.emails.join(', '));
     return true;
   } catch (error) {
-    console.error('Failed to send URL up alert:', error);
+    console.error('📧 ❌ Failed to send URL up alert:', error);
+    console.error('📧 ❌ Error details:', error.stack);
     return false;
   }
 }
-
 
 
 
