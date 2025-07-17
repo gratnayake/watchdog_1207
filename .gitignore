@@ -19,6 +19,7 @@ backend/dist/
 backend/data/
 backend/logs/
 logs/
+Backup
 
 # Runtime data
 pids

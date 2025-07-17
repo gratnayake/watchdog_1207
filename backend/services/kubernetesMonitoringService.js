@@ -1,4 +1,4 @@
-// backend/services/kubernetesMonitoringService.js
+// backend/services/kubernetesMonitoringService.js - Enhanced Workload Monitoring
 const cron = require('node-cron');
 const emailService = require('./emailService');
 const kubernetesService = require('./kubernetesService');
@@ -6,19 +6,20 @@ const kubernetesConfigService = require('./kubernetesConfigService');
 
 class KubernetesMonitoringService {
   constructor() {
-    this.podStatuses = new Map();
+    // Replace pod tracking with workload tracking
+    this.workloadStatuses = new Map(); // Track workloads instead of individual pods
     this.nodeStatuses = new Map();
     this.emailSentStatus = new Map();
     this.isMonitoring = false;
     this.checkInterval = null;
     
-    // Check every 2 minutes for pod failures
+    // Check every 2 minutes
     this.checkFrequency = '*/2 * * * *';
     
-    console.log('☸️ Kubernetes Monitoring Service initialized');
+    console.log('☸️ Kubernetes Monitoring Service initialized (Workload-based)');
   }
 
-  // Start continuous monitoring
+  // Keep existing method signatures for compatibility
   startMonitoring() {
     if (this.isMonitoring) {
       console.log('⚠️ Kubernetes monitoring already running');
@@ -31,17 +32,15 @@ class KubernetesMonitoringService {
       return false;
     }
 
-    console.log(`☸️ Starting Kubernetes monitoring (checking every 2 minutes)`);
+    console.log(`☸️ Starting Kubernetes monitoring (workload-based, checking every 2 minutes)`);
     
-    // Use node-cron for reliable scheduling
     this.checkInterval = cron.schedule(this.checkFrequency, async () => {
-      await this.checkPodHealth();
+      await this.checkPodHealth(); // Keep method name but change implementation
       await this.checkNodeHealth();
     }, {
       scheduled: false
     });
 
-    // Start the cron job
     this.checkInterval.start();
     this.isMonitoring = true;
 
@@ -54,7 +53,6 @@ class KubernetesMonitoringService {
     return true;
   }
 
-  // Stop monitoring
   stopMonitoring() {
     if (!this.isMonitoring) {
       console.log('⚠️ Kubernetes monitoring not running');
@@ -72,234 +70,346 @@ class KubernetesMonitoringService {
     return true;
   }
 
-  // Get monitoring status
   getStatus() {
     return {
       isMonitoring: this.isMonitoring,
-      podCount: this.podStatuses.size,
+      podCount: this.getTotalPodCount(), // Calculate from workloads
       nodeCount: this.nodeStatuses.size,
+      workloadCount: this.workloadStatuses.size,
       lastCheck: new Date()
     };
   }
 
+  getTotalPodCount() {
+    let totalPods = 0;
+    for (const [key, workload] of this.workloadStatuses) {
+      if (workload.pods) {
+        totalPods += workload.pods.length;
+      }
+    }
+    return totalPods;
+  }
+
+  // Enhanced checkPodHealth - now monitors workloads
   async checkPodHealth() {
     try {
-      console.log('☸️ Checking Kubernetes pod health...');
+      console.log('☸️ Checking Kubernetes workload health...');
       
       const config = kubernetesConfigService.getConfig();
-      if (!config.isConfigured || !config.emailGroupId) {
+      if (!config.isConfigured) {
+        console.log('⚠️ Kubernetes not configured - skipping workload health check');
         return;
       }
 
+      // Get current workload status using enhanced kubernetesService
+      const currentWorkloads = await this.getWorkloadStatus();
+      
+      console.log(`✅ Retrieved ${currentWorkloads.length} workloads from cluster`);
+
+      // Compare with previous state and detect changes
+      for (const workload of currentWorkloads) {
+        const workloadKey = `${workload.type}/${workload.name}/${workload.namespace}`;
+        const previousStatus = this.workloadStatuses.get(workloadKey);
+        
+        // Store current status
+        this.workloadStatuses.set(workloadKey, {
+          ...workload,
+          lastSeen: new Date()
+        });
+
+        // Check for status changes
+        if (previousStatus) {
+          await this.detectWorkloadChanges(workload, previousStatus, config.emailGroupId);
+        } else {
+          console.log(`🆕 New workload detected: ${workloadKey}`);
+        }
+      }
+
+      // Clean up old workload statuses
+      this.cleanupDeletedWorkloads(currentWorkloads);
+
+    } catch (error) {
+      console.error('❌ Workload health check failed:', error);
+    }
+  }
+
+  // Get comprehensive workload status
+  async getWorkloadStatus() {
+    try {
+      // Get all pods first
       const pods = await kubernetesService.getAllPods();
       
-      for (const pod of pods) {
-        const podKey = `${pod.namespace}/${pod.name}`;
-        const previousStatus = this.podStatuses.get(podKey);
-        
-        // Check for pod failure
-        if (previousStatus && previousStatus.status !== 'Failed' && pod.status === 'Failed') {
-          console.log(`🚨 Pod failure detected: ${podKey}`);
-          await this.sendPodFailureAlert(pod, config.emailGroupId);
-        }
-        
-        // Check for pod recovery
-        if (previousStatus && previousStatus.status === 'Failed' && pod.status === 'Running') {
-          console.log(`✅ Pod recovery detected: ${podKey}`);
-          await this.sendPodRecoveryAlert(pod, config.emailGroupId);
-        }
-        
-        this.podStatuses.set(podKey, {
-          status: pod.status,
-          timestamp: new Date(),
-          restarts: pod.restarts
-        });
-      }
+      // Group pods by their owner (deployment/statefulset/etc)
+      const workloads = this.groupPodsByWorkload(pods);
+      
+      return workloads;
     } catch (error) {
-      console.error('❌ Kubernetes pod health check failed:', error);
+      console.error('Failed to get workload status:', error);
+      return [];
     }
   }
 
+  // Group pods by their controlling workload
+  groupPodsByWorkload(pods) {
+    const workloadMap = new Map();
+
+    pods.forEach(pod => {
+      const workloadInfo = this.extractWorkloadInfo(pod);
+      
+      if (!workloadMap.has(workloadInfo.key)) {
+        workloadMap.set(workloadInfo.key, {
+          type: workloadInfo.type,
+          name: workloadInfo.name,
+          namespace: workloadInfo.namespace,
+          pods: [],
+          desiredReplicas: 0, // Will be calculated
+          readyReplicas: 0,
+          status: 'unknown'
+        });
+      }
+
+      const workload = workloadMap.get(workloadInfo.key);
+      workload.pods.push({
+        name: pod.name,
+        status: pod.status,
+        ready: pod.ready,
+        restarts: pod.restarts,
+        age: pod.age,
+        node: pod.node
+      });
+
+      // Count ready replicas
+      if (pod.ready && pod.status === 'Running') {
+        workload.readyReplicas++;
+      }
+    });
+
+    // Convert map to array and calculate health
+    return Array.from(workloadMap.values()).map(workload => {
+      workload.desiredReplicas = workload.pods.length; // For now, assume current count is desired
+      workload.status = this.calculateWorkloadHealth(workload);
+      return workload;
+    });
+  }
+
+  // Extract workload information from pod name and labels
+  extractWorkloadInfo(pod) {
+    // Handle different pod naming patterns
+    let workloadName = pod.name;
+    let workloadType = 'Pod'; // Default for standalone pods
+
+    // Pattern: deployment-name-replicaset-hash-pod-hash
+    if (pod.name.includes('-')) {
+      const parts = pod.name.split('-');
+      if (parts.length >= 3) {
+        // Remove last 2 parts (replicaset hash + pod hash)
+        workloadName = parts.slice(0, -2).join('-');
+        workloadType = 'Deployment';
+      }
+    }
+
+    const key = `${workloadType}/${workloadName}/${pod.namespace}`;
+    
+    return {
+      key,
+      type: workloadType,
+      name: workloadName,
+      namespace: pod.namespace
+    };
+  }
+
+  calculateWorkloadHealth(workload) {
+    const totalPods = workload.pods.length;
+    const readyPods = workload.readyReplicas;
+    const runningPods = workload.pods.filter(p => p.status === 'Running').length;
+
+    if (readyPods === 0 && totalPods > 0) return 'critical';
+    if (readyPods < totalPods * 0.5) return 'degraded';
+    if (runningPods < totalPods) return 'warning';
+    return 'healthy';
+  }
+
+  async detectWorkloadChanges(current, previous, emailGroupId) {
+    const workloadKey = `${current.type}/${current.name}/${current.namespace}`;
+
+    // Only alert on significant changes, not normal pod restarts
+    const currentHealthyPods = current.pods.filter(p => p.ready && p.status === 'Running').length;
+    const previousHealthyPods = previous.pods ? previous.pods.filter(p => p.ready && p.status === 'Running').length : 0;
+
+    // Alert only if healthy pod count drops significantly
+    if (currentHealthyPods < previousHealthyPods && currentHealthyPods < current.desiredReplicas) {
+      console.log(`🚨 Workload degraded: ${workloadKey} (${currentHealthyPods}/${current.desiredReplicas} healthy)`);
+      await this.sendWorkloadAlert(current, 'degraded', emailGroupId);
+    }
+
+    // Alert on complete failures
+    if (currentHealthyPods === 0 && current.desiredReplicas > 0 && previousHealthyPods > 0) {
+      console.log(`💥 Workload failed: ${workloadKey}`);
+      await this.sendWorkloadAlert(current, 'failed', emailGroupId);
+    }
+
+    // Alert on recovery
+    if (currentHealthyPods === current.desiredReplicas && previousHealthyPods < previous.desiredReplicas) {
+      console.log(`✅ Workload recovered: ${workloadKey}`);
+      await this.sendWorkloadAlert(current, 'recovered', emailGroupId);
+    }
+  }
+
+  async sendWorkloadAlert(workload, alertType, emailGroupId) {
+    if (!emailGroupId) {
+      console.log('⚠️ No email group configured for workload alerts');
+      return false;
+    }
+
+    const alertKey = `${workload.type}/${workload.name}/${workload.namespace}/${alertType}`;
+    const now = new Date();
+    const lastAlert = this.emailSentStatus.get(alertKey);
+
+    // Prevent duplicate alerts within 10 minutes
+    if (lastAlert && (now - lastAlert) < 10 * 60 * 1000) {
+      return false;
+    }
+
+    try {
+      const groups = emailService.getEmailGroups();
+      const targetGroup = groups.find(g => g.id === emailGroupId && g.enabled);
+      
+      if (!targetGroup || targetGroup.emails.length === 0) {
+        console.log('⚠️ No valid email group found for workload alerts');
+        return false;
+      }
+
+      const subject = this.getAlertSubject(workload, alertType);
+      const htmlContent = this.getAlertContent(workload, alertType, targetGroup.name);
+
+      const mailOptions = {
+        from: emailService.getEmailConfig().user,
+        to: targetGroup.emails.join(','),
+        subject: subject,
+        html: htmlContent
+      };
+
+      await emailService.transporter.sendMail(mailOptions);
+      this.emailSentStatus.set(alertKey, now);
+      
+      console.log(`📧 ✅ Workload ${alertType} alert sent for ${workload.name}`);
+      return true;
+
+    } catch (error) {
+      console.error(`📧 ❌ Failed to send workload alert:`, error);
+      return false;
+    }
+  }
+
+  getAlertSubject(workload, alertType) {
+    const typeEmoji = {
+      'degraded': '⚠️',
+      'failed': '🚨',
+      'recovered': '✅'
+    };
+
+    return `${typeEmoji[alertType]} Kubernetes ${workload.type}: ${workload.name} ${alertType.toUpperCase()}`;
+  }
+
+  getAlertContent(workload, alertType, groupName) {
+    const statusColor = {
+      'degraded': '#ff7f00',
+      'failed': '#dc3545',
+      'recovered': '#28a745'
+    };
+
+    return `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <div style="background-color: ${statusColor[alertType]}; color: white; padding: 20px; text-align: center;">
+          <h1 style="margin: 0; font-size: 24px;">☸️ KUBERNETES WORKLOAD ALERT</h1>
+        </div>
+        
+        <div style="background-color: #f8f9fa; padding: 20px; border-left: 5px solid ${statusColor[alertType]};">
+          <h2 style="color: ${statusColor[alertType]}; margin-top: 0;">${workload.type}: ${alertType.toUpperCase()}</h2>
+          
+          <table style="width: 100%; border-collapse: collapse; margin: 15px 0;">
+            <tr>
+              <td style="padding: 8px; font-weight: bold; width: 30%;">Workload:</td>
+              <td style="padding: 8px;">${workload.type}/${workload.name}</td>
+            </tr>
+            <tr style="background-color: #ffffff;">
+              <td style="padding: 8px; font-weight: bold;">Namespace:</td>
+              <td style="padding: 8px;">${workload.namespace}</td>
+            </tr>
+            <tr>
+              <td style="padding: 8px; font-weight: bold;">Status:</td>
+              <td style="padding: 8px; color: ${statusColor[alertType]};">${workload.status.toUpperCase()}</td>
+            </tr>
+            <tr style="background-color: #ffffff;">
+              <td style="padding: 8px; font-weight: bold;">Healthy Pods:</td>
+              <td style="padding: 8px;">${workload.readyReplicas}/${workload.desiredReplicas}</td>
+            </tr>
+          </table>
+          
+          <div style="background-color: #fff3cd; border: 1px solid #ffeaa7; padding: 15px; margin: 15px 0; border-radius: 4px;">
+            <h3 style="margin-top: 0; color: #856404;">📋 Pod Details</h3>
+            <ul style="color: #856404; margin: 10px 0;">
+              ${workload.pods.map(pod => 
+                `<li><strong>${pod.name}:</strong> ${pod.status} (${pod.ready ? 'Ready' : 'Not Ready'}) - ${pod.restarts} restarts</li>`
+              ).join('')}
+            </ul>
+          </div>
+        </div>
+        
+        <div style="background-color: #e9ecef; padding: 15px; text-align: center; font-size: 12px; color: #6c757d;">
+          <p style="margin: 0;">Alert sent to: ${groupName}</p>
+          <p style="margin: 5px 0 0 0;">Kubernetes Workload Monitoring System</p>
+        </div>
+      </div>
+    `;
+  }
+
+  cleanupDeletedWorkloads(currentWorkloads) {
+    const currentKeys = new Set(
+      currentWorkloads.map(w => `${w.type}/${w.name}/${w.namespace}`)
+    );
+
+    for (const [key] of this.workloadStatuses) {
+      if (!currentKeys.has(key)) {
+        console.log(`🗑️ Cleaning up deleted workload: ${key}`);
+        this.workloadStatuses.delete(key);
+      }
+    }
+  }
+
+  // Keep existing checkNodeHealth method
   async checkNodeHealth() {
     try {
-      const nodes = await kubernetesService.getNodes();
+      console.log('☸️ Checking Kubernetes node health...');
       
-      for (const node of nodes) {
-        const previousStatus = this.nodeStatuses.get(node.name);
-        
-        // Check for node failure
-        if (previousStatus && previousStatus.status === 'Ready' && node.status === 'NotReady') {
-          console.log(`🚨 Node failure detected: ${node.name}`);
-          // Could add node failure alerts here
-        }
-        
-        this.nodeStatuses.set(node.name, {
-          status: node.status,
-          timestamp: new Date()
-        });
-      }
-    } catch (error) {
-      console.error('❌ Kubernetes node health check failed:', error);
-    }
-  }
-
-  async sendPodFailureAlert(pod, emailGroupId) {
-    try {
-      const emailSentKey = `${pod.namespace}/${pod.name}/failure`;
-      
-      // Prevent duplicate emails for the same failure
-      if (this.emailSentStatus.has(emailSentKey)) {
+      const config = kubernetesConfigService.getConfig();
+      if (!config.isConfigured) {
+        console.log('⚠️ Kubernetes not configured - skipping node health check');
         return;
       }
 
-      const groups = emailService.getEmailGroups();
-      const targetGroup = groups.find(g => g.id === emailGroupId && g.enabled);
+      const nodes = await kubernetesService.getNodes();
       
-      if (!targetGroup || targetGroup.emails.length === 0) {
-        console.log('⚠️ No valid email group for Kubernetes alerts');
-        return false;
-      }
+      nodes.forEach(node => {
+        const nodeKey = `node/${node.name}`;
+        const previousStatus = this.nodeStatuses.get(nodeKey);
+        
+        if (previousStatus && previousStatus.status !== node.status) {
+          console.log(`🖥️ Node status changed: ${node.name} ${previousStatus.status} → ${node.status}`);
+          // Could send node alerts here if needed
+        }
+        
+        this.nodeStatuses.set(nodeKey, {
+          name: node.name,
+          status: node.status,
+          lastSeen: new Date()
+        });
+      });
 
-      const currentTime = new Date();
-      const mailOptions = {
-        from: emailService.getEmailConfig().user,
-        to: targetGroup.emails.join(','),
-        subject: `☸️ KUBERNETES ALERT: Pod Failed - ${pod.name}`,
-        html: `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-            <div style="background-color: #dc3545; color: white; padding: 20px; text-align: center;">
-              <h1 style="margin: 0; font-size: 24px;">☸️ KUBERNETES ALERT</h1>
-            </div>
-            
-            <div style="background-color: #f8f9fa; padding: 20px; border-left: 5px solid #dc3545;">
-              <h2 style="color: #dc3545; margin-top: 0;">Pod Status: FAILED</h2>
-              
-              <table style="width: 100%; border-collapse: collapse; margin: 15px 0;">
-                <tr>
-                  <td style="padding: 8px; font-weight: bold; width: 30%;">Pod Name:</td>
-                  <td style="padding: 8px;">${pod.name}</td>
-                </tr>
-                <tr style="background-color: #ffffff;">
-                  <td style="padding: 8px; font-weight: bold;">Namespace:</td>
-                  <td style="padding: 8px;">${pod.namespace}</td>
-                </tr>
-                <tr>
-                  <td style="padding: 8px; font-weight: bold;">Status:</td>
-                  <td style="padding: 8px; color: #dc3545;">🔴 FAILED</td>
-                </tr>
-                <tr style="background-color: #ffffff;">
-                  <td style="padding: 8px; font-weight: bold;">Node:</td>
-                  <td style="padding: 8px;">${pod.node || 'Unknown'}</td>
-                </tr>
-                <tr>
-                  <td style="padding: 8px; font-weight: bold;">Alert Time:</td>
-                  <td style="padding: 8px;">${currentTime.toLocaleString()}</td>
-                </tr>
-                <tr style="background-color: #ffffff;">
-                  <td style="padding: 8px; font-weight: bold;">Restart Count:</td>
-                  <td style="padding: 8px;">${pod.restarts || 0}</td>
-                </tr>
-              </table>
-              
-              <div style="background-color: #fff3cd; border: 1px solid #ffeaa7; padding: 15px; margin: 15px 0; border-radius: 4px;">
-                <h3 style="margin-top: 0; color: #856404;">⚠️ ACTION REQUIRED</h3>
-                <ul style="color: #856404; margin: 10px 0;">
-                  <li>Check pod logs: <code>kubectl logs ${pod.name} -n ${pod.namespace}</code></li>
-                  <li>Describe pod: <code>kubectl describe pod ${pod.name} -n ${pod.namespace}</code></li>
-                  <li>Verify resource availability in the cluster</li>
-                  <li>Check cluster node health</li>
-                  <li>Review deployment configuration</li>
-                </ul>
-              </div>
-            </div>
-            
-            <div style="background-color: #e9ecef; padding: 15px; text-align: center; font-size: 12px; color: #6c757d;">
-              <p style="margin: 0;">This alert was sent to: ${targetGroup.name}</p>
-              <p style="margin: 5px 0 0 0;">Monitor your Kubernetes cluster for additional issues</p>
-            </div>
-          </div>
-        `
-      };
+      console.log(`✅ Node health check completed - ${nodes.length} nodes checked`);
 
-      await emailService.transporter.sendMail(mailOptions);
-      
-      // Mark email as sent to prevent duplicates
-      this.emailSentStatus.set(emailSentKey, currentTime);
-      
-      console.log('📧 ✅ Kubernetes pod failure alert sent successfully');
-      return true;
     } catch (error) {
-      console.error('📧 ❌ Failed to send Kubernetes alert:', error);
-      return false;
-    }
-  }
-
-  async sendPodRecoveryAlert(pod, emailGroupId) {
-    try {
-      const groups = emailService.getEmailGroups();
-      const targetGroup = groups.find(g => g.id === emailGroupId && g.enabled);
-      
-      if (!targetGroup || targetGroup.emails.length === 0) {
-        return false;
-      }
-
-      const currentTime = new Date();
-      const mailOptions = {
-        from: emailService.getEmailConfig().user,
-        to: targetGroup.emails.join(','),
-        subject: `☸️ KUBERNETES RECOVERY: Pod Restored - ${pod.name}`,
-        html: `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-            <div style="background-color: #28a745; color: white; padding: 20px; text-align: center;">
-              <h1 style="margin: 0; font-size: 24px;">☸️ KUBERNETES RECOVERY</h1>
-            </div>
-            
-            <div style="background-color: #f8f9fa; padding: 20px; border-left: 5px solid #28a745;">
-              <h2 style="color: #28a745; margin-top: 0;">Pod Status: RUNNING</h2>
-              
-              <table style="width: 100%; border-collapse: collapse; margin: 15px 0;">
-                <tr>
-                  <td style="padding: 8px; font-weight: bold; width: 30%;">Pod Name:</td>
-                  <td style="padding: 8px;">${pod.name}</td>
-                </tr>
-                <tr style="background-color: #ffffff;">
-                  <td style="padding: 8px; font-weight: bold;">Namespace:</td>
-                  <td style="padding: 8px;">${pod.namespace}</td>
-                </tr>
-                <tr>
-                  <td style="padding: 8px; font-weight: bold;">Status:</td>
-                  <td style="padding: 8px; color: #28a745;">🟢 RUNNING</td>
-                </tr>
-                <tr style="background-color: #ffffff;">
-                  <td style="padding: 8px; font-weight: bold;">Recovery Time:</td>
-                  <td style="padding: 8px;">${currentTime.toLocaleString()}</td>
-                </tr>
-              </table>
-              
-              <div style="background-color: #d1ecf1; border: 1px solid #bee5eb; padding: 15px; margin: 15px 0; border-radius: 4px;">
-                <h3 style="margin-top: 0; color: #0c5460;">ℹ️ STATUS UPDATE</h3>
-                <ul style="color: #0c5460; margin: 10px 0;">
-                  <li>Pod has been restored to running state</li>
-                  <li>Application should be functioning normally</li>
-                  <li>Monitor for any unusual behavior</li>
-                </ul>
-              </div>
-            </div>
-          </div>
-        `
-      };
-
-      await emailService.transporter.sendMail(mailOptions);
-      
-      // Clear the failure email status since pod recovered
-      const emailSentKey = `${pod.namespace}/${pod.name}/failure`;
-      this.emailSentStatus.delete(emailSentKey);
-      
-      console.log('📧 ✅ Kubernetes pod recovery alert sent successfully');
-      return true;
-    } catch (error) {
-      console.error('📧 ❌ Failed to send Kubernetes recovery alert:', error);
-      return false;
+      console.error('❌ Node health check failed:', error);
     }
   }
 }
