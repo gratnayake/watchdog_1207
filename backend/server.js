@@ -2075,12 +2075,13 @@ app.get('/api/kubernetes/pods/enhanced', async (req, res) => {
     
     console.log(`🔍 Enhanced pods request: namespace=${namespace}, includeDeleted=${includeDeleted}`);
     
-    // Get current pods from Kubernetes
+    // Get current pods from Kubernetes with container details
     let currentPods = [];
     try {
       if (namespace === 'all') {
-        currentPods = await kubernetesService.getAllPods();
+        currentPods = await kubernetesService.getAllPodsWithContainers(); // Use new method
       } else {
+        // You might want to create a getPodsWithContainers method for specific namespace too
         currentPods = await kubernetesService.getPods(namespace);
       }
     } catch (k8sError) {
@@ -2099,19 +2100,45 @@ app.get('/api/kubernetes/pods/enhanced', async (req, res) => {
       sortBy
     });
     
+    // Merge current pod data (with container info) with lifecycle data
+    const enrichedPods = comprehensivePods.map(lifecyclePod => {
+      const currentPod = currentPods.find(cp => 
+        cp.name === lifecyclePod.name && cp.namespace === lifecyclePod.namespace
+      );
+      
+      if (currentPod) {
+        // Merge current pod data with lifecycle data
+        return {
+          ...lifecyclePod,
+          containers: currentPod.containers,
+          readyContainers: currentPod.readyContainers,
+          totalContainers: currentPod.totalContainers,
+          readinessRatio: currentPod.readinessRatio
+        };
+      }
+      
+      // For deleted pods or when current data is not available
+      return {
+        ...lifecyclePod,
+        containers: [],
+        readyContainers: 0,
+        totalContainers: 1, // Assume single container for deleted pods
+        readinessRatio: lifecyclePod.isDeleted ? '0/1' : '0/1'
+      };
+    });
+    
     // Get statistics
     const stats = podLifecycleService.getPodStatistics(namespace === 'all' ? null : namespace);
+    
+    console.log(`✅ Enhanced pods response: ${enrichedPods.length} pods with container details`);
     
     res.json({
       success: true,
       data: {
-        pods: comprehensivePods,
+        pods: enrichedPods,
         statistics: stats,
         changes: changes,
-        namespace: namespace,
-        timestamp: new Date(),
-        totalPods: comprehensivePods.length,
-        livePods: currentPods.length
+        timestamp: new Date()
       }
     });
     

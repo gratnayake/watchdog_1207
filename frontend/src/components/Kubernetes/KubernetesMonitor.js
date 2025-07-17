@@ -401,12 +401,9 @@ const handleStopDeployment = async (pod) => {
       key: 'ready',
       width: 100,
       render: (_, record) => {
-        const readyCount = record.containers ? 
-          record.containers.filter(c => c.ready).length : 
-          (record.ready ? 1 : 0);
-        
-        const totalCount = record.containers ? 
-          record.containers.length : 1;
+        // Use the backend-provided readiness data
+        const readyCount = record.readyContainers || 0;
+        const totalCount = record.totalContainers || 1;
 
         const getTagColor = () => {
           if (record.isDeleted) return 'default';
@@ -422,8 +419,8 @@ const handleStopDeployment = async (pod) => {
           return '#ff4d4f';
         };
 
-        // Create tooltip content showing container details
-        const tooltipContent = record.containers ? (
+        // Create tooltip content
+        const tooltipContent = record.containers && record.containers.length > 0 ? (
           <div>
             <div style={{ marginBottom: 8, fontWeight: 'bold' }}>
               Container Status:
@@ -436,19 +433,20 @@ const handleStopDeployment = async (pod) => {
                 }}>
                   {container.ready ? '✓' : '✗'}
                 </span>
-                <span>{container.name}</span>
-                {!container.ready && (
-                  <span style={{ color: '#ff4d4f', marginLeft: 8 }}>
-                    (Not Ready)
-                  </span>
-                )}
+                <span style={{ fontWeight: 'bold' }}>{container.name}</span>
+                <div style={{ fontSize: '11px', color: '#666', marginLeft: 16 }}>
+                  State: {container.state || 'Unknown'}
+                </div>
+                <div style={{ fontSize: '11px', color: '#666', marginLeft: 16 }}>
+                  Restarts: {container.restartCount || 0}
+                </div>
               </div>
             ))}
           </div>
         ) : (
           <div>
-            <div>Single container pod</div>
-            <div>Status: {record.ready ? 'Ready' : 'Not Ready'}</div>
+            <div>Pod readiness: {record.ready ? 'Ready' : 'Not Ready'}</div>
+            <div>Containers: {readyCount}/{totalCount}</div>
           </div>
         );
 
