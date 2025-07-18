@@ -1525,19 +1525,13 @@ app.post('/api/validate-script-path', (req, res) => {
 // Get database operations status
 app.get('/api/database/operations/status', async (req, res) => {
   try {
-    console.log('📊 Getting database operations status...');
-    const status = await databaseOperationsService.getDatabaseStatus();
-    
-    res.json({ 
-      success: true, 
-      status: status,
-      timestamp: new Date()
-    });
+    const status = await databaseOperationsService.getStatus(); 
+    res.json(status);
   } catch (error) {
     console.error('❌ Database operations status error:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
-      error: error.message 
+      error: error.message
     });
   }
 });
@@ -1582,7 +1576,7 @@ app.post('/api/database/operations/startup', async (req, res) => {
     console.log('🚀 Database STARTUP requested...');
     
     // Check if user has permission (you might want to add admin check here)
-    const result = await databaseOperationsService.startupDatabase();
+    const result = await databaseOperationsService.startup();
     
     if (result.success) {
       console.log('✅ Database startup completed successfully');
@@ -1606,6 +1600,50 @@ app.post('/api/database/operations/startup', async (req, res) => {
     res.status(500).json({ 
       success: false,
       error: error.message 
+    });
+  }
+});
+
+app.post('/api/database/operations/restart', async (req, res) => {
+  try {
+    console.log('🔄 Database restart requested via API');
+    const result = await databaseOperationsService.restart(); // ✅ Correct method name
+    res.json(result);
+  } catch (error) {
+    console.error('❌ Database restart error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+app.post('/api/database/operations/test-connection', async (req, res) => {
+  try {
+    console.log('🧪 Database SYS connection test requested');
+    const result = await databaseOperationsService.testConnection(); // ✅ Correct method name
+    res.json(result);
+  } catch (error) {
+    console.error('❌ Database connection test error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+app.get('/api/database/operations/config', (req, res) => {
+  try {
+    const validation = databaseOperationsService.validateConfig(); // ✅ Correct method name
+    res.json({
+      success: true,
+      ...validation
+    });
+  } catch (error) {
+    console.error('❌ Database operations config error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
     });
   }
 });
