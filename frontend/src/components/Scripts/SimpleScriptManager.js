@@ -80,7 +80,7 @@ const SimpleScriptManager = () => {
       const { databaseOperationsAPI } = await import('../../services/api');
       const response = await databaseOperationsAPI.getStatus();
       if (response.success) {
-        setDbOperationsStatus(response.status);
+        setDbOperationsStatus(response);
       }
     } catch (error) {
       console.error('Failed to load database operations status:', error);
@@ -186,7 +186,7 @@ const SimpleScriptManager = () => {
 
   // Render Database Operations Panel
   const renderDatabaseOperations = () => {
-    if (!dbOperationsStatus?.configured) {
+    if (!dbOperationsStatus?.configInfo?.isConfigured) {
       return (
         <Alert
           message="Database Not Configured"
@@ -199,13 +199,13 @@ const SimpleScriptManager = () => {
     }
 
     const getStatusColor = () => {
-      if (dbOperationsStatus.available) return 'success';
+      if (dbOperationsStatus?.configInfo?.isConfigured) return 'success';
       return 'error';
     };
 
     const getStatusText = () => {
-      if (dbOperationsStatus.available) return 'ONLINE';
-      return 'OFFLINE';
+      if (dbOperationsStatus?.configInfo?.isConfigured) return 'CONFIGURED';
+      return 'NOT CONFIGURED';
     };
 
     return (
@@ -232,11 +232,10 @@ const SimpleScriptManager = () => {
             <Space direction="vertical" size="small">
               <Text strong>Connection:</Text>
               <Text code style={{ fontSize: '12px' }}>
-                {dbOperationsStatus.connectionString}
+                {dbOperationsStatus?.configInfo?.host}:{dbOperationsStatus?.configInfo?.port}/{dbOperationsStatus?.configInfo?.serviceName}
               </Text>
               <Text type="secondary" style={{ fontSize: '12px' }}>
-                {dbOperationsStatus.message}
-              </Text>
+                SYS User: {dbOperationsStatus?.configInfo?.sysUsername || 'Not configured'}              </Text>
             </Space>
           </Col>
           <Col span={12}>
@@ -743,4 +742,138 @@ const SimpleScriptManager = () => {
     );
   };
 
-  export default SimpleScriptManager;
+  export default SimpleScriptManager;// In frontend/src/components/Scripts/SimpleScriptManager.js
+
+// PROBLEM 1: The loadDatabaseOperationsStatus function is setting the wrong data
+// FIND this function (around line 75):
+
+const loadDatabaseOperationsStatus = async () => {
+  try {
+    const { databaseOperationsAPI } = await import('../../services/api');
+    const response = await databaseOperationsAPI.getStatus();
+    console.log('🔍 Database operations API response:', response); // Add this for debugging
+    
+    if (response.success) {
+      // CHANGE THIS LINE:
+      // setDbOperationsStatus(response.status);
+      
+      // TO THIS LINE:
+      setDbOperationsStatus(response);  // Set the entire response object
+    }
+  } catch (error) {
+    console.error('Failed to load database operations status:', error);
+  }
+};
+
+// PROBLEM 2: Update the renderDatabaseOperations function
+// FIND this function (around line 140):
+
+const renderDatabaseOperations = () => {
+  console.log('🔍 Current dbOperationsStatus:', dbOperationsStatus); // Add debugging
+  
+  // CHANGE THIS CHECK:
+  // if (!dbOperationsStatus?.configured) {
+  
+  // TO THIS CHECK:
+  if (!dbOperationsStatus?.configInfo?.isConfigured) {
+    return (
+      <Alert
+        message="Database Not Configured"
+        description="Please configure database connection in Database Config to enable database operations."
+        type="warning"
+        showIcon
+        style={{ marginBottom: 16 }}
+      />
+    );
+  }
+
+  const getStatusColor = () => {
+    // CHANGE THIS:
+    // if (dbOperationsStatus.available) return 'success';
+    
+    // TO THIS:
+    if (dbOperationsStatus?.configInfo?.isConfigured) return 'success';
+    return 'error';
+  };
+
+  const getStatusText = () => {
+    // CHANGE THIS:
+    // if (dbOperationsStatus.available) return 'ONLINE';
+    
+    // TO THIS:
+    if (dbOperationsStatus?.configInfo?.isConfigured) return 'CONFIGURED';
+    return 'NOT CONFIGURED';
+  };
+
+  return (
+    <Card 
+      title={
+        <Space>
+          <DatabaseOutlined />
+          <span>Database Operations</span>
+          <Tag color={getStatusColor()}>
+            {getStatusText()}
+          </Tag>
+        </Space>
+      }
+      size="small"
+      style={{ marginBottom: 16 }}
+      extra={
+        <Button size="small" onClick={loadDatabaseOperationsStatus}>
+          <ReloadOutlined />
+        </Button>
+      }
+    >
+      <Row gutter={16} align="middle">
+        <Col span={12}>
+          <Space direction="vertical" size="small">
+            <Text strong>Connection:</Text>
+            <Text code style={{ fontSize: '12px' }}>
+              {/* CHANGE THIS: */}
+              {/* {dbOperationsStatus.connectionString} */}
+              
+              {/* TO THIS: */}
+              {dbOperationsStatus?.configInfo?.host}:{dbOperationsStatus?.configInfo?.port}/{dbOperationsStatus?.configInfo?.serviceName}
+            </Text>
+            <Text type="secondary" style={{ fontSize: '12px' }}>
+              {/* CHANGE THIS: */}
+              {/* {dbOperationsStatus.message} */}
+              
+              {/* TO THIS: */}
+              SYS User: {dbOperationsStatus?.configInfo?.sysUsername} | Password: {dbOperationsStatus?.configInfo?.sysPasswordConfigured ? 'Configured' : 'Not Set'}
+            </Text>
+          </Space>
+        </Col>
+        <Col span={12}>
+          <Space>
+            <Popconfirm
+              title="Shutdown Database"
+              description="This will perform SHUTDOWN IMMEDIATE. Are you sure?"
+              onConfirm={handleDatabaseShutdown}
+              disabled={dbOperationLoading}
+            >
+              <Button 
+                danger 
+                size="small" 
+                loading={dbOperationLoading}
+                icon={<PoweroffOutlined />}
+              >
+                Shutdown
+              </Button>
+            </Popconfirm>
+            
+            <Button 
+              type="primary" 
+              size="small" 
+              loading={dbOperationLoading}
+              icon={<ThunderboltOutlined />}
+              onClick={handleDatabaseStartup}
+            >
+              Startup
+            </Button>
+          </Space>
+        </Col>
+      </Row>
+    </Card>
+  );
+};
