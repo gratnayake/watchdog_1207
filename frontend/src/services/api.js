@@ -461,7 +461,7 @@ export const simpleScriptAPI = {
 export const databaseOperationsAPI = {
   // Get database operations status
   getStatus: async () => {
-    const response = await api.get('/api/database/operations/status');
+    const response = await api.get('/api/database/operations/config');
     return response.data;
   },
 

@@ -77,17 +77,35 @@ const SimpleScriptManager = () => {
   // FIXED: Load database operations status
   const loadDatabaseOperationsStatus = async () => {
     try {
-      const { databaseOperationsAPI } = await import('../../services/api');
-      const response = await databaseOperationsAPI.getStatus();
-      console.log('🔍 Database operations API response:', response); // Debug log
-      
-      if (response.success) {
-        // FIXED: Set the entire response object instead of response.status
-        setDbOperationsStatus(response);
-      }
-    } catch (error) {
-      console.error('Failed to load database operations status:', error);
+      console.log('🔍 Starting loadDatabaseOperationsStatus...');
+    
+    // Try direct fetch first to see what we get
+    const directResponse = await fetch('http://localhost:5001/api/database/operations/status');
+    const directData = await directResponse.json();
+    console.log('🔍 Direct fetch response:', directData);
+    
+    // Try through the API service
+    const { databaseOperationsAPI } = await import('../../services/api');
+    console.log('🔍 databaseOperationsAPI imported successfully');
+    
+    const response = await databaseOperationsAPI.getStatus();
+    console.log('🔍 databaseOperationsAPI.getStatus() response:', response);
+    
+    if (response && response.success) {
+      console.log('🔍 Setting dbOperationsStatus to:', response);
+      setDbOperationsStatus(response);
+    } else {
+      console.log('❌ Response failed or no success flag:', response);
       setDbOperationsStatus(null);
+    }
+  } catch (error) {
+    console.error('❌ Failed to load database operations status:', error);
+    console.error('❌ Error details:', {
+      message: error.message,
+      stack: error.stack,
+      name: error.name
+    });
+    setDbOperationsStatus(null);
     }
   };
 
@@ -189,103 +207,138 @@ const SimpleScriptManager = () => {
   };
 
   // COMPLETELY FIXED: Render Database Operations Panel
-  const renderDatabaseOperations = () => {
-    console.log('🔍 Current dbOperationsStatus:', dbOperationsStatus); // Debug log
-    
-    // FIXED: Check the correct path for configuration status
-    if (!dbOperationsStatus?.configInfo?.isConfigured) {
-      return (
-        <Alert
-          message="Database Not Configured"
-          description="Please configure database connection in Database Config to enable database operations."
-          type="warning"
-          showIcon
-          style={{ marginBottom: 16 }}
-        />
-      );
-    }
-
-    const getStatusColor = () => {
-      // FIXED: Check the correct configuration path
-      if (dbOperationsStatus?.configInfo?.isConfigured) return 'success';
-      return 'error';
-    };
-
-    const getStatusText = () => {
-      // FIXED: Check the correct configuration path  
-      if (dbOperationsStatus?.configInfo?.isConfigured) return 'CONFIGURED';
-      return 'NOT CONFIGURED';
-    };
-
+ const renderDatabaseOperations = () => {
+  console.log('🔍 renderDatabaseOperations called');
+  console.log('🔍 Current dbOperationsStatus:', dbOperationsStatus);
+  console.log('🔍 dbOperationsStatus type:', typeof dbOperationsStatus);
+  
+  if (dbOperationsStatus) {
+    console.log('🔍 dbOperationsStatus.configInfo:', dbOperationsStatus.configInfo);
+    console.log('🔍 dbOperationsStatus.configInfo?.isConfigured:', dbOperationsStatus.configInfo?.isConfigured);
+  }
+  
+  // Check various possible paths
+  const checks = {
+    'dbOperationsStatus exists': !!dbOperationsStatus,
+    'dbOperationsStatus.success': dbOperationsStatus?.success,
+    'dbOperationsStatus.configInfo exists': !!dbOperationsStatus?.configInfo,
+    'dbOperationsStatus.configInfo.isConfigured': dbOperationsStatus?.configInfo?.isConfigured,
+    'dbOperationsStatus.isConfigured': dbOperationsStatus?.isConfigured,
+    'dbOperationsStatus.configured': dbOperationsStatus?.configured
+  };
+  
+  console.log('🔍 Configuration checks:', checks);
+  
+  // Try multiple possible paths for the configuration check
+  const isConfigured = dbOperationsStatus?.configInfo?.isConfigured || 
+                      dbOperationsStatus?.isConfigured || 
+                      dbOperationsStatus?.configured;
+  
+  console.log('🔍 Final isConfigured result:', isConfigured);
+  
+  if (!isConfigured) {
+    console.log('🔍 Showing "Database Not Configured" alert');
     return (
-      <Card 
-        title={
-          <Space>
-            <DatabaseOutlined />
-            <span>Database Operations</span>
-            <Tag color={getStatusColor()}>
-              {getStatusText()}
-            </Tag>
-          </Space>
-        }
-        size="small"
+      <Alert
+        message="Database Not Configured"
+        description="Please configure database connection in Database Config to enable database operations."
+        type="warning"
+        showIcon
         style={{ marginBottom: 16 }}
-        extra={
-          <Button size="small" onClick={loadDatabaseOperationsStatus}>
-            <ReloadOutlined />
+        action={
+          <Button size="small" onClick={() => {
+            console.log('🔍 Manual refresh button clicked');
+            loadDatabaseOperationsStatus();
+          }}>
+            Debug Refresh
           </Button>
         }
-      >
-        <Row gutter={16} align="middle">
-          <Col span={12}>
-            <Space direction="vertical" size="small">
-              <Text strong>Connection:</Text>
-              <Text code style={{ fontSize: '12px' }}>
-                {/* FIXED: Use the correct data structure */}
-                {dbOperationsStatus?.configInfo?.host}:{dbOperationsStatus?.configInfo?.port}/{dbOperationsStatus?.configInfo?.serviceName}
-              </Text>
-              <Text type="secondary" style={{ fontSize: '12px' }}>
-                {/* FIXED: Show proper status information */}
-                SYS User: {dbOperationsStatus?.configInfo?.sysUsername} | Password: {dbOperationsStatus?.configInfo?.sysPasswordConfigured ? 'Configured' : 'Not Set'}
-              </Text>
-            </Space>
-          </Col>
-          <Col span={12}>
-            <Space>
-              <Popconfirm
-                title="Shutdown Database"
-                description="This will perform SHUTDOWN IMMEDIATE. Are you sure?"
-                onConfirm={handleDatabaseShutdown}
-                okText="Shutdown"
-                cancelText="Cancel"
-                okButtonProps={{ danger: true }}
-                disabled={dbOperationLoading}
-              >
-                <Button 
-                  danger
-                  icon={<PoweroffOutlined />}
-                  loading={dbOperationLoading}
-                  disabled={dbOperationLoading}
-                >
-                  Shutdown
-                </Button>
-              </Popconfirm>
-              
+      />
+    );
+  }
+
+  console.log('🔍 Database is configured, showing operations panel');
+
+  const getStatusColor = () => {
+    if (isConfigured) return 'success';
+    return 'error';
+  };
+
+  const getStatusText = () => {
+    if (isConfigured) return 'CONFIGURED';
+    return 'NOT CONFIGURED';
+  };
+
+  return (
+    <Card 
+      title={
+        <Space>
+          <DatabaseOutlined />
+          <span>Database Operations</span>
+          <Tag color={getStatusColor()}>
+            {getStatusText()}
+          </Tag>
+        </Space>
+      }
+      size="small"
+      style={{ marginBottom: 16 }}
+      extra={
+        <Button size="small" onClick={() => {
+          console.log('🔍 Reload button clicked');
+          loadDatabaseOperationsStatus();
+        }}>
+          <ReloadOutlined />
+        </Button>
+      }
+    >
+      <Row gutter={16} align="middle">
+        <Col span={12}>
+          <Space direction="vertical" size="small">
+            <Text strong>Connection:</Text>
+            <Text code style={{ fontSize: '12px' }}>
+              {dbOperationsStatus?.configInfo?.host || 'Unknown'}:
+              {dbOperationsStatus?.configInfo?.port || 'Unknown'}/
+              {dbOperationsStatus?.configInfo?.serviceName || 'Unknown'}
+            </Text>
+            <Text type="secondary" style={{ fontSize: '12px' }}>
+              SYS User: {dbOperationsStatus?.configInfo?.sysUsername || 'Unknown'} | 
+              Password: {dbOperationsStatus?.configInfo?.sysPasswordConfigured ? 'Configured' : 'Not Set'}
+            </Text>
+          </Space>
+        </Col>
+        <Col span={12}>
+          <Space>
+            <Popconfirm
+              title="Shutdown Database"
+              description="This will perform SHUTDOWN IMMEDIATE. Are you sure?"
+              onConfirm={handleDatabaseShutdown}
+              disabled={dbOperationLoading}
+            >
               <Button 
-                type="primary"
-                icon={<ThunderboltOutlined />}
-                onClick={handleDatabaseStartup}
+                danger
+                icon={<PoweroffOutlined />}
                 loading={dbOperationLoading}
                 disabled={dbOperationLoading}
               >
-                Startup
+                Shutdown
               </Button>
-            </Space>
-          </Col>
-        </Row>
-      </Card>
-    );
-  };
+            </Popconfirm>
+            
+            <Button 
+              type="primary"
+              icon={<ThunderboltOutlined />}
+              onClick={handleDatabaseStartup}
+              loading={dbOperationLoading}
+              disabled={dbOperationLoading}
+            >
+              Startup
+            </Button>
+          </Space>
+        </Col>
+      </Row>
+    </Card>
+  );
+};
 
   // Render Kubernetes status indicator
   const renderKubernetesStatus = () => {
