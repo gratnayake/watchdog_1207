@@ -1541,31 +1541,27 @@ app.post('/api/database/operations/shutdown', async (req, res) => {
   try {
     console.log('🛑 Database SHUTDOWN IMMEDIATE requested...');
     
-    // Check if user has permission (you might want to add admin check here)
     const result = await databaseOperationsService.shutdownImmediate();
     
-    if (result.success) {
-      console.log('✅ Database shutdown completed successfully');
-      res.json({ 
-        success: true, 
-        message: result.message,
-        output: result.output,
-        timestamp: result.timestamp
-      });
-    } else {
-      console.log('❌ Database shutdown failed');
-      res.status(400).json({ 
-        success: false,
-        error: result.message,
-        output: result.output,
-        timestamp: result.timestamp
-      });
-    }
+    // ALWAYS return 200 status, let frontend handle success/failure
+    console.log('📤 Shutdown result:', { success: result.success, message: result.message });
+    res.json({ 
+      success: result.success, 
+      message: result.message,
+      output: result.output,
+      timestamp: result.timestamp,
+      error: result.error || null
+    });
+    
   } catch (error) {
     console.error('❌ Database shutdown error:', error);
-    res.status(500).json({ 
+    // Even for exceptions, return 200 with error info
+    res.json({ 
       success: false,
-      error: error.message 
+      error: error.message,
+      message: `Shutdown failed: ${error.message}`,
+      output: `Error: ${error.message}`,
+      timestamp: new Date()
     });
   }
 });
@@ -1575,31 +1571,27 @@ app.post('/api/database/operations/startup', async (req, res) => {
   try {
     console.log('🚀 Database STARTUP requested...');
     
-    // Check if user has permission (you might want to add admin check here)
     const result = await databaseOperationsService.startup();
     
-    if (result.success) {
-      console.log('✅ Database startup completed successfully');
-      res.json({ 
-        success: true, 
-        message: result.message,
-        output: result.output,
-        timestamp: result.timestamp
-      });
-    } else {
-      console.log('❌ Database startup failed');
-      res.status(400).json({ 
-        success: false,
-        error: result.message,
-        output: result.output,
-        timestamp: result.timestamp
-      });
-    }
+    // ALWAYS return 200 status, let frontend handle success/failure
+    console.log('📤 Startup result:', { success: result.success, message: result.message });
+    res.json({ 
+      success: result.success, 
+      message: result.message,
+      output: result.output,
+      timestamp: result.timestamp,
+      error: result.error || null
+    });
+    
   } catch (error) {
     console.error('❌ Database startup error:', error);
-    res.status(500).json({ 
+    // Even for exceptions, return 200 with error info
+    res.json({ 
       success: false,
-      error: error.message 
+      error: error.message,
+      message: `Startup failed: ${error.message}`,
+      output: `Error: ${error.message}`,
+      timestamp: new Date()
     });
   }
 });
