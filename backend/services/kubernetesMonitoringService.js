@@ -107,48 +107,88 @@ class KubernetesMonitoringService {
     return totalPods;
   }
 
-  // Enhanced checkPodHealth - now monitors workloads
-  async checkPodHealth() {
-    try {
-      console.log('☸️ Checking Kubernetes workload health...');
-      
-      const config = kubernetesConfigService.getConfig();
-      if (!config.isConfigured) {
-        console.log('⚠️ Kubernetes not configured - skipping workload health check');
-        return;
-      }
+  async detectMissingWorkloads(currentWorkloads, emailGroupId) {
+  const currentKeys = new Set(
+    currentWorkloads.map(w => `${w.type}/${w.name}/${w.namespace}`)
+  );
 
-      // Get current workload status using enhanced kubernetesService
-      const currentWorkloads = await this.getWorkloadStatus();
+  // Check for workloads that existed before but are now missing
+  for (const [key, previousWorkload] of this.workloadStatuses) {
+    if (!currentKeys.has(key)) {
+      // This workload existed before but is now completely gone
+      const wasHealthy = previousWorkload.pods && 
+                        previousWorkload.pods.filter(p => p.ready && p.status === 'Running').length > 0;
       
-      console.log(`✅ Retrieved ${currentWorkloads.length} workloads from cluster`);
-
-      // Compare with previous state and detect changes
-      for (const workload of currentWorkloads) {
-        const workloadKey = `${workload.type}/${workload.name}/${workload.namespace}`;
-        const previousStatus = this.workloadStatuses.get(workloadKey);
+      if (wasHealthy) {
+        console.log(`🛑 MISSING WORKLOAD detected: ${key} (was healthy, now completely gone - likely MTCTL stop)`);
         
-        // Store current status
-        this.workloadStatuses.set(workloadKey, {
-          ...workload,
-          lastSeen: new Date()
+        // Create a synthetic workload object for the alert
+        const syntheticWorkload = {
+          type: previousWorkload.type,
+          name: previousWorkload.name,
+          namespace: previousWorkload.namespace,
+          pods: [], // No pods now
+          readyReplicas: 0,
+          desiredReplicas: 0,
+          status: 'stopped'
+        };
+        
+        // Add to batch alert with stop reason
+        this.addToBatchAlert('stopped', syntheticWorkload, emailGroupId, {
+          previousHealthy: previousWorkload.pods ? 
+            previousWorkload.pods.filter(p => p.ready && p.status === 'Running').length : 0,
+          reason: 'Workload completely removed (likely MTCTL stop or scaling to zero)'
         });
-
-        // Check for status changes
-        if (previousStatus) {
-          await this.detectWorkloadChanges(workload, previousStatus, config.emailGroupId);
-        } else {
-          console.log(`🆕 New workload detected: ${workloadKey}`);
-        }
       }
-
-      // Clean up old workload statuses
-      this.cleanupDeletedWorkloads(currentWorkloads);
-
-    } catch (error) {
-      console.error('❌ Workload health check failed:', error);
     }
   }
+}
+
+ 
+ async checkPodHealth() {
+  try {
+    console.log('☸️ Checking Kubernetes workload health...');
+    
+    const config = kubernetesConfigService.getConfig();
+    if (!config.isConfigured) {
+      console.log('⚠️ Kubernetes not configured - skipping workload health check');
+      return;
+    }
+
+    // Get current workload status using enhanced kubernetesService
+    const currentWorkloads = await this.getWorkloadStatus();
+    
+    console.log(`✅ Retrieved ${currentWorkloads.length} workloads from cluster`);
+
+    // CRITICAL: Detect missing workloads BEFORE processing current ones
+    await this.detectMissingWorkloads(currentWorkloads, config.emailGroupId);
+
+    // Compare with previous state and detect changes
+    for (const workload of currentWorkloads) {
+      const workloadKey = `${workload.type}/${workload.name}/${workload.namespace}`;
+      const previousStatus = this.workloadStatuses.get(workloadKey);
+      
+      // Store current status
+      this.workloadStatuses.set(workloadKey, {
+        ...workload,
+        lastSeen: new Date()
+      });
+
+      // Check for status changes
+      if (previousStatus) {
+        await this.detectWorkloadChanges(workload, previousStatus, config.emailGroupId);
+      } else {
+        console.log(`🆕 New workload detected: ${workloadKey}`);
+      }
+    }
+
+    // Clean up old workload statuses AFTER detecting missing ones
+    this.cleanupDeletedWorkloads(currentWorkloads);
+
+  } catch (error) {
+    console.error('❌ Workload health check failed:', error);
+  }
+}
 
   // FIXED: Enhanced detection logic to catch MTCTL stops
   async detectWorkloadChanges(current, previous, emailGroupId) {
