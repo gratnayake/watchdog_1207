@@ -53,6 +53,44 @@ class KubernetesService {
     }
   }
 
+  getPodStatus(pod) {
+    const phase = pod.status?.phase?.toLowerCase() || 'unknown';
+    const conditions = pod.status?.conditions || [];
+    const containerStatuses = pod.status?.containerStatuses || [];
+    
+    // Check for terminating pods (THIS IS KEY!)
+    if (pod.metadata?.deletionTimestamp) {
+      return 'Terminating';
+    }
+    
+    // Check container states
+    for (const container of containerStatuses) {
+      if (container.state?.terminated) {
+        return container.state.terminated.reason || 'Terminated';
+      }
+      if (container.state?.waiting && container.state.waiting.reason !== 'ContainerCreating') {
+        return container.state.waiting.reason || 'Waiting';
+      }
+    }
+    
+    // Map phase to status
+    switch (phase) {
+      case 'running':
+        // Check if all containers are ready
+        const allReady = containerStatuses.every(c => c.ready);
+        return allReady ? 'Running' : 'Not Ready';
+      case 'succeeded':
+        return 'Completed';
+      case 'failed':
+        return 'Failed';
+      case 'pending':
+        return 'Pending';
+      case 'unknown':
+        return 'Unknown';
+      default:
+        return phase.charAt(0).toUpperCase() + phase.slice(1);
+    }
+  }
   // Refresh configuration if settings changed
   refreshConfiguration() {
     console.log('🔄 Refreshing Kubernetes configuration...');
@@ -121,13 +159,11 @@ class KubernetesService {
     try {
       console.log(`🔍 Fetching pods from namespace: ${namespace}`);
       
-      // Ensure environment variable is set
       const config = kubernetesConfigService.getConfig();
       process.env.KUBECONFIG = config.kubeconfigPath;
       
       const response = await this.k8sApi.listNamespacedPod(namespace);
       
-      // Use the same pattern as testConnection
       let podData = response.items || response.body?.items || response.data?.items;
       
       if (!podData) {
@@ -138,7 +174,7 @@ class KubernetesService {
       const pods = podData.map(pod => ({
         name: pod.metadata.name,
         namespace: pod.metadata.namespace,
-        status: pod.status.phase,
+        status: this.getPodStatus(pod), // USE THE NEW METHOD HERE TOO!
         ready: this.getPodReadyStatus(pod),
         restarts: this.getPodRestarts(pod),
         age: this.calculateAge(pod.metadata.creationTimestamp),
@@ -147,7 +183,9 @@ class KubernetesService {
           name: container.name,
           image: container.image,
           ready: this.getContainerStatus(pod, container.name)
-        }))
+        })),
+        // Add deletion timestamp
+        deletionTimestamp: pod.metadata.deletionTimestamp || null
       }));
 
       console.log(`✅ Retrieved ${pods.length} pods from namespace: ${namespace}`);
@@ -189,38 +227,37 @@ class KubernetesService {
       }
 
       const pods = podData.map(pod => {
-        // Get container statuses
-        const containerStatuses = pod.status.containerStatuses || [];
-        const containers = pod.spec.containers.map(container => {
-          const status = containerStatuses.find(cs => cs.name === container.name);
-          return {
-            name: container.name,
-            image: container.image,
-            ready: status ? status.ready : false,
-            restartCount: status ? status.restartCount : 0,
-            state: status ? this.getContainerState(status) : 'Unknown'
-          };
-        });
-
-        // Calculate overall readiness
-        const readyContainers = containers.filter(c => c.ready).length;
-        const totalContainers = containers.length;
-
+      const containerStatuses = pod.status.containerStatuses || [];
+      const containers = pod.spec.containers.map(container => {
+        const status = containerStatuses.find(cs => cs.name === container.name);
         return {
-          name: pod.metadata.name,
-          namespace: pod.metadata.namespace,
-          status: pod.status.phase,
-          ready: this.getPodReadyStatus(pod),
-          restarts: this.getPodRestarts(pod),
-          age: this.calculateAge(pod.metadata.creationTimestamp),
-          node: pod.spec.nodeName,
-          labels: pod.metadata.labels || {},
-          containers: containers,
-          readyContainers: readyContainers,
-          totalContainers: totalContainers,
-          readinessRatio: `${readyContainers}/${totalContainers}`
+          name: container.name,
+          image: container.image,
+          ready: status ? status.ready : false,
+          restartCount: status ? status.restartCount : 0,
+          state: status ? this.getContainerState(status) : 'Unknown'
         };
       });
+
+      const readyContainers = containers.filter(c => c.ready).length;
+      const totalContainers = containers.length;
+
+      return {
+        name: pod.metadata.name,
+        namespace: pod.metadata.namespace,
+        status: this.getPodStatus(pod), // USE HERE AS WELL!
+        ready: this.getPodReadyStatus(pod),
+        restarts: this.getPodRestarts(pod),
+        age: this.calculateAge(pod.metadata.creationTimestamp),
+        node: pod.spec.nodeName,
+        labels: pod.metadata.labels || {},
+        containers: containers,
+        readyContainers: readyContainers,
+        totalContainers: totalContainers,
+        readinessRatio: `${readyContainers}/${totalContainers}`,
+        deletionTimestamp: pod.metadata.deletionTimestamp || null
+      };
+    });
 
       console.log(`✅ Retrieved ${pods.length} pods with container details`);
       return pods;
@@ -246,7 +283,6 @@ class KubernetesService {
     try {
       console.log('🔍 Fetching pods from all namespaces...');
       
-      // Ensure environment variable is set
       const config = kubernetesConfigService.getConfig();
       process.env.KUBECONFIG = config.kubeconfigPath;
       
@@ -262,12 +298,14 @@ class KubernetesService {
       const pods = podData.map(pod => ({
         name: pod.metadata.name,
         namespace: pod.metadata.namespace,
-        status: pod.status.phase,
+        status: this.getPodStatus(pod), // USE THE NEW METHOD HERE!
         ready: this.getPodReadyStatus(pod),
         restarts: this.getPodRestarts(pod),
         age: this.calculateAge(pod.metadata.creationTimestamp),
         node: pod.spec.nodeName,
-        labels: pod.metadata.labels || {}
+        labels: pod.metadata.labels || {},
+        // Add deletion timestamp for monitoring service
+        deletionTimestamp: pod.metadata.deletionTimestamp || null
       }));
 
       console.log(`✅ Retrieved ${pods.length} pods from all namespaces`);

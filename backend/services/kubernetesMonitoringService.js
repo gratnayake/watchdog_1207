@@ -235,7 +235,14 @@ class KubernetesMonitoringService {
     const totalPods = workload.pods.length;
     const readyPods = workload.readyReplicas;
     const runningPods = workload.pods.filter(p => p.status === 'Running').length;
+    const terminatingPods = workload.pods.filter(p => 
+        p.status === 'Terminating' || 
+        p.status === 'Completed' || 
+        p.status === 'Failed' ||
+        p.status === 'Unknown'
+      ).length;
 
+    if (terminatingPods === totalPods && totalPods > 0) return 'critical';
     if (readyPods === 0 && totalPods > 0) return 'critical';
     if (readyPods < totalPods * 0.5) return 'degraded';
     if (runningPods < totalPods) return 'warning';
@@ -243,29 +250,130 @@ class KubernetesMonitoringService {
   }
 
   async detectWorkloadChanges(current, previous, emailGroupId) {
-    const workloadKey = `${current.type}/${current.name}/${current.namespace}`;
+  const workloadKey = `${current.type}/${current.name}/${current.namespace}`;
 
-    // Only alert on significant changes, not normal pod restarts
-    const currentHealthyPods = current.pods.filter(p => p.ready && p.status === 'Running').length;
-    const previousHealthyPods = previous.pods ? previous.pods.filter(p => p.ready && p.status === 'Running').length : 0;
+  // Count healthy vs unhealthy pods
+  const currentHealthyPods = current.pods.filter(p => 
+    p.ready && (p.status === 'Running' || p.status === 'Ready')
+  ).length;
+  
+  const previousHealthyPods = previous.pods ? 
+    previous.pods.filter(p => 
+      p.ready && (p.status === 'Running' || p.status === 'Ready')
+    ).length : 0;
 
-    // Collect alerts instead of sending immediately
-    if (currentHealthyPods < previousHealthyPods && currentHealthyPods < current.desiredReplicas) {
-      console.log(`🚨 Workload degraded: ${workloadKey} (${currentHealthyPods}/${current.desiredReplicas} healthy)`);
-      this.addToBatchAlert('degraded', current, emailGroupId);
-    }
+  // Also check for status transitions
+  const currentUnhealthyPods = current.pods.filter(p => 
+    p.status === 'Terminating' || 
+    p.status === 'Completed' || 
+    p.status === 'Failed' ||
+    p.status === 'Unknown' ||
+    p.status === 'Stopped'
+  ).length;
 
-    if (currentHealthyPods === 0 && current.desiredReplicas > 0 && previousHealthyPods > 0) {
-      console.log(`💥 Workload failed: ${workloadKey}`);
-      this.addToBatchAlert('failed', current, emailGroupId);
-    }
+  const wasHealthy = previous.status === 'healthy' || previous.status === 'warning';
+  const isNowUnhealthy = current.status === 'critical' || current.status === 'degraded';
 
-    if (currentHealthyPods === current.desiredReplicas && previousHealthyPods < previous.desiredReplicas) {
-      console.log(`✅ Workload recovered: ${workloadKey}`);
-      this.addToBatchAlert('recovered', current, emailGroupId);
+  // Alert if:
+  // 1. Workload went from healthy to unhealthy
+  // 2. All pods became unhealthy (shutdown scenario)
+  // 3. Significant drop in healthy pods
+  if ((wasHealthy && isNowUnhealthy) || 
+      (currentHealthyPods === 0 && previousHealthyPods > 0) ||
+      (currentUnhealthyPods === current.pods.length && current.pods.length > 0)) {
+    
+    console.log(`🚨 Workload ${workloadKey} became unhealthy!`);
+    console.log(`  Previous: ${previousHealthyPods}/${previous.pods?.length || 0} healthy`);
+    console.log(`  Current: ${currentHealthyPods}/${current.pods.length} healthy`);
+    console.log(`  Unhealthy pods: ${currentUnhealthyPods}`);
+    
+    // Add to batch alerts based on severity
+    if (current.status === 'critical' || currentHealthyPods === 0) {
+      this.addToBatchAlert('failed', {
+        workload: workloadKey,
+        type: current.type,
+        name: current.name,
+        namespace: current.namespace,
+        previousStatus: previous.status,
+        currentStatus: current.status,
+        readyReplicas: current.readyReplicas,
+        totalReplicas: current.pods.length,
+        unhealthyPods: currentUnhealthyPods,
+        timestamp: new Date()
+      });
+    } else if (current.status === 'degraded') {
+      this.addToBatchAlert('degraded', {
+        workload: workloadKey,
+        type: current.type,
+        name: current.name,
+        namespace: current.namespace,
+        previousStatus: previous.status,
+        currentStatus: current.status,
+        readyReplicas: current.readyReplicas,
+        totalReplicas: current.pods.length,
+        timestamp: new Date()
+      });
     }
   }
+  
+  // Recovery detection remains the same
+  else if ((previous.status === 'critical' || previous.status === 'degraded') && 
+           current.status === 'healthy') {
+    
+    console.log(`✅ Workload ${workloadKey} recovered!`);
+    
+    this.addToBatchAlert('recovered', {
+      workload: workloadKey,
+      type: current.type,
+      name: current.name,
+      namespace: current.namespace,
+      previousStatus: previous.status,
+      currentStatus: current.status,
+      readyReplicas: current.readyReplicas,
+      totalReplicas: current.pods.length,
+      timestamp: new Date()
+    });
+  }
+}
 
+getPodStatus(pod) {
+  const phase = pod.status?.phase?.toLowerCase() || 'unknown';
+  const conditions = pod.status?.conditions || [];
+  const containerStatuses = pod.status?.containerStatuses || [];
+  
+  // Check for terminating pods
+  if (pod.metadata?.deletionTimestamp) {
+    return 'Terminating';
+  }
+  
+  // Check container states
+  for (const container of containerStatuses) {
+    if (container.state?.terminated) {
+      return container.state.terminated.reason || 'Terminated';
+    }
+    if (container.state?.waiting) {
+      return container.state.waiting.reason || 'Waiting';
+    }
+  }
+  
+  // Map phase to status
+  switch (phase) {
+    case 'running':
+      // Check if all containers are ready
+      const allReady = containerStatuses.every(c => c.ready);
+      return allReady ? 'Running' : 'Not Ready';
+    case 'succeeded':
+      return 'Completed';
+    case 'failed':
+      return 'Failed';
+    case 'pending':
+      return 'Pending';
+    case 'unknown':
+      return 'Unknown';
+    default:
+      return phase.charAt(0).toUpperCase() + phase.slice(1);
+  }
+}
   // New method to collect alerts for batching
   addToBatchAlert(alertType, workload, emailGroupId) {
     if (!emailGroupId) {
