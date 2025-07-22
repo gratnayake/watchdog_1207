@@ -15,7 +15,11 @@ class KubernetesMonitoringService {
     this.isMonitoring = false;
     this.checkInterval = null;
     
-    // Enhanced batch alert system
+    
+    this.isInitialized = false;
+    this.initializationComplete = false;
+    
+    
     this.pendingAlerts = {
       failed: [],
       degraded: [],
@@ -45,10 +49,10 @@ class KubernetesMonitoringService {
       return false;
     }
 
-    console.log(`☸️ Starting Kubernetes monitoring (Enhanced with comprehensive alerts, checking every 2 minutes)`);
+    console.log(`☸️ Starting Kubernetes monitoring with baseline detection...`);
     
     this.checkInterval = cron.schedule(this.checkFrequency, async () => {
-      await this.checkPodHealth(); // Keep method name but change implementation
+      await this.checkPodHealth();
       await this.checkNodeHealth();
     }, {
       scheduled: false
@@ -57,13 +61,59 @@ class KubernetesMonitoringService {
     this.checkInterval.start();
     this.isMonitoring = true;
 
-    // Perform initial check
-    setTimeout(() => {
-      this.checkPodHealth();
-      this.checkNodeHealth();
+    // ENHANCED: Perform baseline initialization
+    setTimeout(async () => {
+      await this.performBaselineInitialization();
     }, 5000);
 
     return true;
+  }
+
+  async performBaselineInitialization() {
+    try {
+      console.log('🎯 Performing baseline initialization...');
+      
+      const config = kubernetesConfigService.getConfig();
+      if (!config.isConfigured) {
+        console.log('⚠️ Kubernetes not configured - skipping baseline initialization');
+        return;
+      }
+
+      // Get initial workload status
+      const initialWorkloads = await this.getWorkloadStatus();
+      
+      console.log(`📊 Baseline: Found ${initialWorkloads.length} workloads`);
+
+      // Store initial state without triggering alerts
+      for (const workload of initialWorkloads) {
+        const workloadKey = `${workload.type}/${workload.name}/${workload.namespace}`;
+        
+        this.workloadStatuses.set(workloadKey, {
+          ...workload,
+          lastSeen: new Date(),
+          isBaseline: true  // Mark as baseline data
+        });
+
+        // Log baseline status for transparency
+        const healthyPods = workload.pods.filter(p => p.ready && p.status === 'Running').length;
+        const totalPods = workload.pods.length;
+        
+        console.log(`📋 Baseline: ${workloadKey} - ${healthyPods}/${totalPods} healthy - Status: ${workload.status}`);
+      }
+
+      // Mark initialization as complete after a grace period
+      setTimeout(() => {
+        this.initializationComplete = true;
+        console.log('✅ Baseline initialization complete - monitoring active for changes only');
+      }, 60000); // 1 minute grace period
+
+      console.log('🎯 Baseline captured - will monitor for changes after 1 minute grace period');
+
+    } catch (error) {
+      console.error('❌ Baseline initialization failed:', error);
+      // Continue monitoring anyway
+      this.initializationComplete = true;
+    }
   }
 
   stopMonitoring() {
@@ -89,11 +139,13 @@ class KubernetesMonitoringService {
   getStatus() {
     return {
       isMonitoring: this.isMonitoring,
-      podCount: this.getTotalPodCount(), // Calculate from workloads
+      initializationComplete: this.initializationComplete,
+      podCount: this.getTotalPodCount(),
       nodeCount: this.nodeStatuses.size,
       workloadCount: this.workloadStatuses.size,
       pendingAlerts: this.getTotalPendingAlerts(),
-      lastCheck: new Date()
+      lastCheck: new Date(),
+      baselineWorkloads: Array.from(this.workloadStatuses.values()).filter(w => w.isBaseline).length
     };
   }
 
@@ -123,6 +175,23 @@ class KubernetesMonitoringService {
       
       console.log(`✅ Retrieved ${currentWorkloads.length} workloads from cluster`);
 
+      // Skip alerts during initialization period
+      if (!this.initializationComplete) {
+        console.log('⏳ Still in initialization grace period - updating baseline only');
+        
+        // Update baseline without alerts
+        for (const workload of currentWorkloads) {
+          const workloadKey = `${workload.type}/${workload.name}/${workload.namespace}`;
+          this.workloadStatuses.set(workloadKey, {
+            ...workload,
+            lastSeen: new Date(),
+            isBaseline: true
+          });
+        }
+        
+        return;
+      }
+
       // CRITICAL: Detect missing workloads BEFORE processing current ones
       await this.detectMissingWorkloads(currentWorkloads, config.emailGroupId);
 
@@ -134,14 +203,22 @@ class KubernetesMonitoringService {
         // Store current status
         this.workloadStatuses.set(workloadKey, {
           ...workload,
-          lastSeen: new Date()
+          lastSeen: new Date(),
+          isBaseline: false  // No longer baseline data
         });
 
-        // Check for status changes
-        if (previousStatus) {
+        // Check for status changes (only after initialization)
+        if (previousStatus && !previousStatus.isBaseline) {
           await this.detectWorkloadChanges(workload, previousStatus, config.emailGroupId);
+        } else if (previousStatus && previousStatus.isBaseline) {
+          // First real check after baseline - only alert on significant issues
+          await this.detectSignificantChangesFromBaseline(workload, previousStatus, config.emailGroupId);
         } else {
-          console.log(`🆕 New workload detected: ${workloadKey}`);
+          console.log(`🆕 New workload detected after baseline: ${workloadKey}`);
+          // This is a genuinely new workload, so we can alert about it
+          this.addToBatchAlert('started', workload, config.emailGroupId, {
+            reason: 'New workload appeared after monitoring started'
+          });
         }
       }
 
@@ -153,6 +230,44 @@ class KubernetesMonitoringService {
     }
   }
 
+   async detectSignificantChangesFromBaseline(current, baseline, emailGroupId) {
+    const workloadKey = `${current.type}/${current.name}/${current.namespace}`;
+
+    const currentHealthyPods = current.pods.filter(p => p.ready && p.status === 'Running').length;
+    const baselineHealthyPods = baseline.pods ? baseline.pods.filter(p => p.ready && p.status === 'Running').length : 0;
+
+    console.log(`🔍 Baseline check: ${workloadKey} - Baseline: ${baselineHealthyPods} → Current: ${currentHealthyPods}`);
+
+    // Only alert if there's a SIGNIFICANT improvement from a bad baseline state
+    // Don't alert for existing problems or minor changes
+    
+    if (baselineHealthyPods === 0 && currentHealthyPods > 0) {
+      console.log(`✅ RECOVERY from baseline: ${workloadKey} (was 0 healthy, now ${currentHealthyPods} healthy)`);
+      this.addToBatchAlert('recovered', current, emailGroupId, {
+        previousHealthy: baselineHealthyPods,
+        currentHealthy: currentHealthyPods,
+        reason: 'Workload recovered from baseline failed state'
+      });
+    } else if (currentHealthyPods > baselineHealthyPods && baselineHealthyPods > 0) {
+      console.log(`✅ IMPROVEMENT from baseline: ${workloadKey} (${baselineHealthyPods} → ${currentHealthyPods} healthy)`);
+      this.addToBatchAlert('recovered', current, emailGroupId, {
+        previousHealthy: baselineHealthyPods,
+        currentHealthy: currentHealthyPods,
+        reason: 'Workload improved from baseline state'
+      });
+    } else if (currentHealthyPods < baselineHealthyPods) {
+      console.log(`⚠️ DEGRADATION from baseline: ${workloadKey} (${baselineHealthyPods} → ${currentHealthyPods} healthy)`);
+      this.addToBatchAlert('degraded', current, emailGroupId, {
+        previousHealthy: baselineHealthyPods,
+        currentHealthy: currentHealthyPods,
+        reason: 'Workload degraded from baseline state'
+      });
+    } else {
+      console.log(`📊 STABLE from baseline: ${workloadKey} (${currentHealthyPods} healthy, no significant change)`);
+      // Don't alert for stable states, even if they're in a failed condition
+      // This prevents false alarms for workloads that were already broken
+    }
+  }
   // NEW: Detect missing workloads before cleanup
   async detectMissingWorkloads(currentWorkloads, emailGroupId) {
     const currentKeys = new Set(
@@ -273,12 +388,21 @@ class KubernetesMonitoringService {
       return;
     }
 
+    // Skip alerts during initialization
+    if (!this.initializationComplete) {
+      console.log('⏳ Skipping alert during initialization period');
+      return;
+    }
+
     // Add to pending alerts with enhanced metadata
     this.pendingAlerts[alertType].push({
       workload: workload,
       timestamp: new Date(),
       emailGroupId: emailGroupId,
-      metadata: metadata  // Additional context for alert
+      metadata: {
+        ...metadata,
+        postBaseline: true  // Mark as post-baseline alert
+      }
     });
 
     console.log(`📝 Added ${alertType.toUpperCase()} alert for ${workload.name} to batch (${this.getTotalPendingAlerts()} total pending)`);
@@ -286,6 +410,7 @@ class KubernetesMonitoringService {
     // Schedule batch send (or reset timer if already scheduled)
     this.scheduleBatchAlert(emailGroupId);
   }
+
 
   // Get total pending alerts count - ENHANCED
   getTotalPendingAlerts() {
