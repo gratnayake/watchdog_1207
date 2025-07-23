@@ -310,75 +310,63 @@ class KubernetesMonitoringService {
   async detectWorkloadChanges(current, previous, emailGroupId) {
     const workloadKey = `${current.type}/${current.name}/${current.namespace}`;
 
-    // Calculate pod counts
+    // Get current status
     const currentHealthyPods = current.pods.filter(p => p.ready && p.status === 'Running').length;
-    const currentTotalPods = current.pods.length;
-    const previousHealthyPods = previous.pods ? previous.pods.filter(p => p.ready && p.status === 'Running').length : 0;
-    const previousTotalPods = previous.pods ? previous.pods.length : 0;
+    const currentDesiredReplicas = current.desiredReplicas || current.pods.length;
+    
+    // Get previous status - handle missing/corrupt data
+    const previousHealthyPods = previous.pods ? 
+      previous.pods.filter(p => p.ready && p.status === 'Running').length : 0;
+    const previousDesiredReplicas = previous.desiredReplicas || previous.pods?.length || 0;
 
-    console.log(`🔍 Analyzing ${workloadKey}: ${previousHealthyPods}→${currentHealthyPods} healthy, ${previousTotalPods}→${currentTotalPods} total`);
+    console.log(`🔍 Workload change check: ${workloadKey}`);
+    console.log(`   Current: ${currentHealthyPods}/${currentDesiredReplicas} healthy`);
+    console.log(`   Previous: ${previousHealthyPods}/${previousDesiredReplicas} healthy`);
 
-    // ENHANCED DETECTION LOGIC
-
-    // 1. INTENTIONAL STOP DETECTION (MTCTL case)
-    // When all pods go from running to completely gone
-    if (previousHealthyPods > 0 && currentTotalPods === 0 && previousTotalPods > 0) {
-      console.log(`🛑 INTENTIONAL STOP detected: ${workloadKey} (was ${previousHealthyPods} healthy, now completely stopped)`);
-      this.addToBatchAlert('stopped', current, emailGroupId, {
-        previousHealthy: previousHealthyPods,
-        previousTotal: previousTotalPods,
-        reason: 'Intentional stop (likely MTCTL or scaling to zero)'
-      });
+    // SCENARIO 1: Workload was down/critical and is now healthy (RECOVERY)
+    if (currentHealthyPods === currentDesiredReplicas && 
+        currentHealthyPods > 0 && 
+        (previousHealthyPods === 0 || previous.status === 'critical')) {
+      
+      console.log(`✅ Workload RECOVERED: ${workloadKey} (${currentHealthyPods}/${currentDesiredReplicas} healthy)`);
+      this.addToBatchAlert('recovered', current, emailGroupId);
+      return;
     }
 
-    // 2. INTENTIONAL START DETECTION  
-    // When pods appear from nothing
-    else if (previousTotalPods === 0 && currentHealthyPods > 0) {
-      console.log(`🚀 INTENTIONAL START detected: ${workloadKey} (started with ${currentHealthyPods} healthy pods)`);
-      this.addToBatchAlert('started', current, emailGroupId, {
-        currentHealthy: currentHealthyPods,
-        currentTotal: currentTotalPods,
-        reason: 'Workload started from zero'
-      });
+    // SCENARIO 2: Workload was healthy and is now degraded
+    if (currentHealthyPods < currentDesiredReplicas && 
+        currentHealthyPods > 0 && 
+        previousHealthyPods >= previousDesiredReplicas) {
+      
+      console.log(`⚠️ Workload DEGRADED: ${workloadKey} (${currentHealthyPods}/${currentDesiredReplicas} healthy)`);
+      this.addToBatchAlert('degraded', current, emailGroupId);
+      return;
     }
 
-    // 3. PARTIAL DEGRADATION (Original logic, but enhanced)
-    // Some pods still running but fewer than before
-    else if (currentHealthyPods < previousHealthyPods && currentHealthyPods > 0) {
-      console.log(`⚠️ DEGRADATION detected: ${workloadKey} (${currentHealthyPods}/${current.desiredReplicas} healthy, was ${previousHealthyPods})`);
-      this.addToBatchAlert('degraded', current, emailGroupId, {
-        previousHealthy: previousHealthyPods,
-        currentHealthy: currentHealthyPods,
-        reason: 'Partial pod failure or scaling down'
-      });
+    // SCENARIO 3: Workload was running and is now completely failed
+    if (currentHealthyPods === 0 && 
+        currentDesiredReplicas > 0 && 
+        previousHealthyPods > 0) {
+      
+      console.log(`💥 Workload FAILED: ${workloadKey}`);
+      this.addToBatchAlert('failed', current, emailGroupId);
+      return;
     }
 
-    // 4. COMPLETE FAILURE (pods exist but none are healthy)
-    // Pods are present but all unhealthy
-    else if (currentTotalPods > 0 && currentHealthyPods === 0 && previousHealthyPods > 0) {
-      console.log(`💥 FAILURE detected: ${workloadKey} (${currentTotalPods} pods present but 0 healthy)`);
-      this.addToBatchAlert('failed', current, emailGroupId, {
-        previousHealthy: previousHealthyPods,
-        currentTotal: currentTotalPods,
-        reason: 'All pods unhealthy but deployment still exists'
-      });
+    // SCENARIO 4: Handle initial snapshot case (first time seeing this workload)
+    if (!previous.lastSeen || !previous.pods) {
+      console.log(`🆕 Initial workload detection: ${workloadKey} - Status: ${current.status}`);
+      
+      // Only alert if workload is currently unhealthy on first detection
+      if (current.status === 'critical' && currentHealthyPods === 0) {
+        console.log(`🚨 New workload detected as CRITICAL: ${workloadKey}`);
+        this.addToBatchAlert('failed', current, emailGroupId);
+      }
+      return;
     }
 
-    // 5. RECOVERY DETECTION
-    // More healthy pods than before
-    else if (currentHealthyPods > previousHealthyPods) {
-      console.log(`✅ RECOVERY detected: ${workloadKey} (${currentHealthyPods} healthy, was ${previousHealthyPods})`);
-      this.addToBatchAlert('recovered', current, emailGroupId, {
-        previousHealthy: previousHealthyPods,
-        currentHealthy: currentHealthyPods,
-        reason: 'Workload recovered or scaled up'
-      });
-    }
-
-    // 6. STABLE STATE (no significant change)
-    else {
-      console.log(`✔️ STABLE: ${workloadKey} (${currentHealthyPods} healthy pods, no significant change)`);
-    }
+    // Log no change detected
+    console.log(`➡️ No significant change for ${workloadKey}`);
   }
 
   // Enhanced method to collect alerts for batching
