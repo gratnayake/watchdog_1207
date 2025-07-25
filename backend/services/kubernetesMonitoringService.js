@@ -159,6 +159,58 @@ class KubernetesMonitoringService {
     return totalPods;
   }
 
+  resetMonitoringState() {
+    console.log('🔄 Resetting Kubernetes monitoring state...');
+    
+    // Clear all cached workload statuses
+    this.workloadStatuses.clear();
+    
+    // Clear all cached node statuses
+    this.nodeStatuses.clear();
+    
+    // Clear all email sent statuses
+    this.emailSentStatus.clear();
+    
+    // Clear any pending alerts
+    this.clearPendingAlerts();
+    
+    console.log('✅ Monitoring state reset complete - fresh start');
+  }
+
+  async performBaselineCheck() {
+    try {
+      console.log('📊 Performing baseline health check (no alerts)...');
+      
+      const config = kubernetesConfigService.getConfig();
+      if (!config.isConfigured) {
+        console.log('⚠️ Kubernetes not configured - skipping baseline check');
+        return;
+      }
+
+      // Get current workload status
+      const currentWorkloads = await this.getWorkloadStatus();
+      
+      // Store as baseline without triggering alerts
+      for (const workload of currentWorkloads) {
+        const workloadKey = `${workload.type}/${workload.name}/${workload.namespace}`;
+        
+        this.workloadStatuses.set(workloadKey, {
+          ...workload,
+          lastSeen: new Date(),
+          isBaseline: true // Mark as baseline
+        });
+        
+        console.log(`📋 Baseline: ${workloadKey} = ${workload.status} (${workload.readyReplicas}/${workload.desiredReplicas})`);
+      }
+
+      console.log(`✅ Baseline established for ${currentWorkloads.length} workloads`);
+
+    } catch (error) {
+      console.error('❌ Baseline check failed:', error);
+    }
+  }
+
+
   // Enhanced checkPodHealth - now monitors workloads
   async checkPodHealth() {
     try {
@@ -308,66 +360,67 @@ class KubernetesMonitoringService {
 
   // ENHANCED: Detection logic to catch MTCTL stops and more
   async detectWorkloadChanges(current, previous, emailGroupId) {
-    const workloadKey = `${current.type}/${current.name}/${current.namespace}`;
+  const workloadKey = `${current.type}/${current.name}/${current.namespace}`;
 
-    // Get current status
-    const currentHealthyPods = current.pods.filter(p => p.ready && p.status === 'Running').length;
-    const currentDesiredReplicas = current.desiredReplicas || current.pods.length;
+  // Get current status
+  const currentHealthyPods = current.pods.filter(p => p.ready && p.status === 'Running').length;
+  const currentDesiredReplicas = current.desiredReplicas || current.pods.length;
+  
+  // Get previous status - handle missing/corrupt data
+  const previousHealthyPods = previous.pods ? 
+    previous.pods.filter(p => p.ready && p.status === 'Running').length : 0;
+  const previousDesiredReplicas = previous.desiredReplicas || previous.pods?.length || 0;
+
+  console.log(`🔍 Workload change check: ${workloadKey}`);
+  console.log(`   Current: ${currentHealthyPods}/${currentDesiredReplicas} healthy`);
+  console.log(`   Previous: ${previousHealthyPods}/${previousDesiredReplicas} healthy`);
+
+  // SCENARIO 1: Workload was down/critical and is now healthy (RECOVERY)
+  if (currentHealthyPods === currentDesiredReplicas && 
+      currentHealthyPods > 0 && 
+      (previousHealthyPods === 0 || previous.status === 'critical')) {
     
-    // Get previous status - handle missing/corrupt data
-    const previousHealthyPods = previous.pods ? 
-      previous.pods.filter(p => p.ready && p.status === 'Running').length : 0;
-    const previousDesiredReplicas = previous.desiredReplicas || previous.pods?.length || 0;
-
-    console.log(`🔍 Workload change check: ${workloadKey}`);
-    console.log(`   Current: ${currentHealthyPods}/${currentDesiredReplicas} healthy`);
-    console.log(`   Previous: ${previousHealthyPods}/${previousDesiredReplicas} healthy`);
-
-    // SCENARIO 1: Workload was down/critical and is now healthy (RECOVERY)
-    if (currentHealthyPods === currentDesiredReplicas && 
-        currentHealthyPods > 0 && 
-        (previousHealthyPods === 0 || previous.status === 'critical')) {
-      
-      console.log(`✅ Workload RECOVERED: ${workloadKey} (${currentHealthyPods}/${currentDesiredReplicas} healthy)`);
-      this.addToBatchAlert('recovered', current, emailGroupId);
-      return;
-    }
-
-    // SCENARIO 2: Workload was healthy and is now degraded
-    if (currentHealthyPods < currentDesiredReplicas && 
-        currentHealthyPods > 0 && 
-        previousHealthyPods >= previousDesiredReplicas) {
-      
-      console.log(`⚠️ Workload DEGRADED: ${workloadKey} (${currentHealthyPods}/${currentDesiredReplicas} healthy)`);
-      this.addToBatchAlert('degraded', current, emailGroupId);
-      return;
-    }
-
-    // SCENARIO 3: Workload was running and is now completely failed
-    if (currentHealthyPods === 0 && 
-        currentDesiredReplicas > 0 && 
-        previousHealthyPods > 0) {
-      
-      console.log(`💥 Workload FAILED: ${workloadKey}`);
-      this.addToBatchAlert('failed', current, emailGroupId);
-      return;
-    }
-
-    // SCENARIO 4: Handle initial snapshot case (first time seeing this workload)
-    if (!previous.lastSeen || !previous.pods) {
-      console.log(`🆕 Initial workload detection: ${workloadKey} - Status: ${current.status}`);
-      
-      // Only alert if workload is currently unhealthy on first detection
-      if (current.status === 'critical' && currentHealthyPods === 0) {
-        console.log(`🚨 New workload detected as CRITICAL: ${workloadKey}`);
-        this.addToBatchAlert('failed', current, emailGroupId);
-      }
-      return;
-    }
-
-    // Log no change detected
-    console.log(`➡️ No significant change for ${workloadKey}`);
+    console.log(`✅ Workload RECOVERED: ${workloadKey} (${currentHealthyPods}/${currentDesiredReplicas} healthy)`);
+    this.addToBatchAlert('recovered', current, emailGroupId);
+    return;
   }
+
+  // SCENARIO 2: Workload was healthy and is now degraded
+  if (currentHealthyPods < currentDesiredReplicas && 
+      currentHealthyPods > 0 && 
+      previousHealthyPods >= previousDesiredReplicas) {
+    
+    console.log(`⚠️ Workload DEGRADED: ${workloadKey} (${currentHealthyPods}/${currentDesiredReplicas} healthy)`);
+    this.addToBatchAlert('degraded', current, emailGroupId);
+    return;
+  }
+
+  // SCENARIO 3: Workload was running and is now completely failed
+  if (currentHealthyPods === 0 && 
+      currentDesiredReplicas > 0 && 
+      previousHealthyPods > 0) {
+    
+    console.log(`💥 Workload FAILED: ${workloadKey}`);
+    this.addToBatchAlert('failed', current, emailGroupId);
+    return;
+  }
+
+  // SCENARIO 4: Handle initial snapshot case (first time seeing this workload)
+  if (!previous.lastSeen || !previous.pods) {
+    console.log(`🆕 Initial workload detection: ${workloadKey} - Status: ${current.status}`);
+    
+    // Only alert if workload is currently unhealthy on first detection
+    if (current.status === 'critical' && currentHealthyPods === 0) {
+      console.log(`🚨 New workload detected as CRITICAL: ${workloadKey}`);
+      this.addToBatchAlert('failed', current, emailGroupId);
+    }
+    return;
+  }
+
+  // Log no change detected
+  console.log(`➡️ No significant change for ${workloadKey}`);
+}
+
 
   // Enhanced method to collect alerts for batching
   addToBatchAlert(alertType, workload, emailGroupId, metadata = {}) {

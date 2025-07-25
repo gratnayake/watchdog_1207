@@ -2348,6 +2348,91 @@ app.delete('/api/scripts/:id', (req, res) => {
   }
 });
 
+// ADD these endpoints to your server.js file
+
+// Reset Kubernetes monitoring state
+app.post('/api/kubernetes/monitoring/reset', (req, res) => {
+  try {
+    console.log('🔄 Monitoring reset requested');
+    
+    // Reset the monitoring service state
+    kubernetesMonitoringService.resetMonitoringState();
+    
+    res.json({
+      success: true,
+      message: 'Kubernetes monitoring state reset successfully',
+      timestamp: new Date()
+    });
+    
+  } catch (error) {
+    console.error('❌ Reset monitoring error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Perform baseline check
+app.post('/api/kubernetes/monitoring/baseline', async (req, res) => {
+  try {
+    console.log('📊 Baseline check requested');
+    
+    const config = kubernetesConfigService.getConfig();
+    if (!config.isConfigured) {
+      return res.status(400).json({
+        success: false,
+        error: 'Kubernetes not configured'
+      });
+    }
+    
+    // Perform baseline check
+    await kubernetesMonitoringService.performBaselineCheck();
+    
+    res.json({
+      success: true,
+      message: 'Baseline check completed successfully',
+      timestamp: new Date()
+    });
+    
+  } catch (error) {
+    console.error('❌ Baseline check error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Get current monitoring statistics
+app.get('/api/kubernetes/monitoring/stats', (req, res) => {
+  try {
+    const status = kubernetesMonitoringService.getStatus();
+    
+    // Add additional debug info
+    const stats = {
+      ...status,
+      workloadStatusCount: kubernetesMonitoringService.workloadStatuses.size,
+      nodeStatusCount: kubernetesMonitoringService.nodeStatuses.size,
+      emailSentStatusCount: kubernetesMonitoringService.emailSentStatus.size
+    };
+    
+    res.json({
+      success: true,
+      stats: stats,
+      timestamp: new Date()
+    });
+    
+  } catch (error) {
+    console.error('❌ Get monitoring stats error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+
 
 // Error handling middleware
 app.use((err, req, res, next) => {

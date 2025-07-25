@@ -193,6 +193,55 @@ const handleRestartPod = async (pod) => {
   }
 };
 
+const handleResetMonitoring = async () => {
+  try {
+    message.loading('Resetting monitoring state...', 0);
+    
+    const response = await fetch('/api/kubernetes/monitoring/reset', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    });
+    
+    const data = await response.json();
+    message.destroy();
+    
+    if (data.success) {
+      message.success('Monitoring state reset successfully! ✅');
+      // Refresh your data if needed
+      setTimeout(() => {
+        window.location.reload(); // Or call your refresh method
+      }, 1000);
+    } else {
+      message.error(`Reset failed: ${data.error}`);
+    }
+  } catch (error) {
+    message.destroy();
+    message.error(`Reset failed: ${error.message}`);
+  }
+};
+
+const handleBaselineCheck = async () => {
+  try {
+    message.loading('Performing baseline check...', 0);
+    
+    const response = await fetch('/api/kubernetes/monitoring/baseline', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    });
+    
+    const data = await response.json();
+    message.destroy();
+    
+    if (data.success) {
+      message.success('Baseline check completed! 📊');
+    } else {
+      message.error(`Baseline check failed: ${data.error}`);
+    }
+  } catch (error) {
+    message.destroy();
+    message.error(`Baseline check failed: ${error.message}`);
+  }
+};
 // Show scale modal
 const handleShowScaleModal = async (pod) => {
   try {
@@ -506,6 +555,7 @@ const handleStopDeployment = async (pod) => {
         </Space>
       ),
     },
+    
     {
       title: 'Restarts',
       dataIndex: 'restarts',
@@ -671,7 +721,35 @@ const handleStopDeployment = async (pod) => {
               </Select>
             </Space>
           </Col>
-
+          <Col xs={24} md={6}>
+      <Space>
+        <Popconfirm
+          title="Reset Monitoring State"
+          description="This will clear all cached pod statuses and start fresh. Are you sure?"
+          onConfirm={handleResetMonitoring}
+          okText="Yes, Reset"
+          cancelText="Cancel"
+          okButtonProps={{ danger: true }}
+        >
+          <Button 
+            icon={<ReloadOutlined />} 
+            danger
+            size="small"
+          >
+            Reset Monitoring
+          </Button>
+        </Popconfirm>
+        
+        <Button 
+          icon={<CheckCircleOutlined />} 
+          type="primary"
+          onClick={handleBaselineCheck}
+          size="small"
+        >
+          Set Baseline
+        </Button>
+      </Space>
+    </Col>
           <Col xs={24} md={4}>
             <Space>
               <Text>Include Deleted:</Text>
