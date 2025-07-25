@@ -40,7 +40,8 @@ import {
   FileTextOutlined,
   InfoCircleOutlined,
   ExpandOutlined,
-  ExclamationCircleOutlined
+  ExclamationCircleOutlined,
+  CheckCircleOutlined
 } from '@ant-design/icons';
 
 import { kubernetesAPI } from '../../services/api';
