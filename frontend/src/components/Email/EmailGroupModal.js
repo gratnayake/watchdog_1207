@@ -10,13 +10,15 @@ import {
   Tag,
   Typography,
   Divider,
-  AutoComplete 
+  AutoComplete,
+  message
 } from 'antd';
 import { 
   TeamOutlined, 
   MailOutlined, 
   PlusOutlined,
   DeleteOutlined
+  
 } from '@ant-design/icons';
 import { emailAPI } from '../../services/api';
 
@@ -107,36 +109,53 @@ const EmailGroupModal = ({ visible, editingGroup, onClose, onSaved }) => {
     setEmails(emails.filter(email => email !== emailToRemove));
   };
 
-  const handleSubmit = async (values) => {
-    try {
-      setLoading(true);
-      
-      if (emails.length === 0) {
-        alert('Please add at least one email address');
-        return;
-      }
-      
-      const groupData = {
-        ...values,
-        emails
-      };
-      
-      let response;
-      if (editingGroup) {
-        response = await emailAPI.updateEmailGroup(editingGroup.id, groupData);
-      } else {
-        response = await emailAPI.createEmailGroup(groupData);
-      }
-      
-      if (response.success) {
-        onSaved();
-      }
-    } catch (error) {
-      console.error('Failed to save group:', error);
-    } finally {
-      setLoading(false);
+
+const handleSubmit = async (values) => {
+  try {
+    setLoading(true);
+    
+    console.log('🔍 Form submission started');
+    console.log('📝 Form values:', values);
+    console.log('📧 Current emails:', emails);
+    console.log('✏️ Editing group:', editingGroup);
+    
+    if (emails.length === 0) {
+      message.error('Please add at least one email address');
+      return;
     }
-  };
+    
+    const groupData = {
+      ...values,
+      emails
+    };
+    
+    console.log('📦 Final group data:', groupData);
+    
+    let response;
+    if (editingGroup) {
+      console.log(`🔧 Updating group ID: ${editingGroup.id}`);
+      response = await emailAPI.updateEmailGroup(editingGroup.id, groupData);
+    } else {
+      console.log('➕ Creating new group');
+      response = await emailAPI.createEmailGroup(groupData);
+    }
+    
+    console.log('📡 API Response:', response);
+    
+    if (response.success) {
+      message.success(editingGroup ? 'Group updated successfully!' : 'Group created successfully!');
+      onSaved();
+    } else {
+      console.error('❌ API Error:', response.error);
+      message.error(`Failed to save group: ${response.error || 'Unknown error'}`);
+    }
+  } catch (error) {
+    console.error('❌ Submit error:', error);
+    message.error(`Failed to save group: ${error.message}`);
+  } finally {
+    setLoading(false);
+  }
+};
 
   return (
     <Modal

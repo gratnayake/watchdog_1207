@@ -330,6 +330,174 @@ class EmailService {
     }
   }
 
+  // ADD these methods to your backend/services/emailService.js file
+// Insert them before the "Legacy methods for compatibility" section
+
+  // Email Group Management Methods
+  createGroup(groupData) {
+    try {
+      const data = this.loadEmailList();
+      
+      // Generate new ID
+      const existingIds = data.groups ? data.groups.map(g => g.id) : [];
+      const newId = existingIds.length > 0 ? Math.max(...existingIds) + 1 : 1;
+      
+      const newGroup = {
+        id: newId,
+        name: groupData.name,
+        description: groupData.description || '',
+        emails: groupData.emails || [],
+        alertTypes: groupData.alertTypes || ['down', 'up'],
+        enabled: groupData.enabled !== undefined ? groupData.enabled : true,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+      
+      // Initialize groups array if it doesn't exist
+      if (!data.groups) data.groups = [];
+      
+      data.groups.push(newGroup);
+      data.lastUpdated = new Date().toISOString();
+      
+      const saved = this.saveEmailList(data);
+      if (saved) {
+        console.log(`📧 Created email group: ${newGroup.name} (ID: ${newGroup.id})`);
+        return newGroup;
+      }
+      
+      return null;
+    } catch (error) {
+      console.error('❌ Error creating email group:', error);
+      return null;
+    }
+  }
+
+  updateGroup(groupId, updateData) {
+    try {
+      const data = this.loadEmailList();
+      
+      if (!data.groups) data.groups = [];
+      
+      const groupIndex = data.groups.findIndex(g => g.id == groupId);
+      if (groupIndex === -1) {
+        console.log(`⚠️ Group with ID ${groupId} not found`);
+        return null;
+      }
+      
+      // Update the group
+      const existingGroup = data.groups[groupIndex];
+      const updatedGroup = {
+        ...existingGroup,
+        ...updateData,
+        id: existingGroup.id, // Ensure ID doesn't change
+        createdAt: existingGroup.createdAt, // Preserve creation date
+        updatedAt: new Date().toISOString()
+      };
+      
+      data.groups[groupIndex] = updatedGroup;
+      data.lastUpdated = new Date().toISOString();
+      
+      const saved = this.saveEmailList(data);
+      if (saved) {
+        console.log(`📧 Updated email group: ${updatedGroup.name} (ID: ${groupId})`);
+        return updatedGroup;
+      }
+      
+      return null;
+    } catch (error) {
+      console.error('❌ Error updating email group:', error);
+      return null;
+    }
+  }
+
+  deleteGroup(groupId) {
+    try {
+      const data = this.loadEmailList();
+      
+      if (!data.groups) data.groups = [];
+      
+      const groupIndex = data.groups.findIndex(g => g.id == groupId);
+      if (groupIndex === -1) {
+        console.log(`⚠️ Group with ID ${groupId} not found`);
+        return false;
+      }
+      
+      const deletedGroup = data.groups[groupIndex];
+      data.groups.splice(groupIndex, 1);
+      data.lastUpdated = new Date().toISOString();
+      
+      const saved = this.saveEmailList(data);
+      if (saved) {
+        console.log(`📧 Deleted email group: ${deletedGroup.name} (ID: ${groupId})`);
+        return true;
+      }
+      
+      return false;
+    } catch (error) {
+      console.error('❌ Error deleting email group:', error);
+      return false;
+    }
+  }
+
+  // Get a specific email group by ID
+  getGroupById(groupId) {
+    try {
+      const data = this.loadEmailList();
+      if (!data.groups) return null;
+      
+      return data.groups.find(g => g.id == groupId) || null;
+    } catch (error) {
+      console.error('❌ Error getting email group by ID:', error);
+      return null;
+    }
+  }
+
+  // Get all emails from a specific group
+  getEmailsFromGroup(groupId) {
+    try {
+      const group = this.getGroupById(groupId);
+      return group ? group.emails : [];
+    } catch (error) {
+      console.error('❌ Error getting emails from group:', error);
+      return [];
+    }
+  }
+
+  // Validate email format
+  validateEmail(email) {
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    return emailRegex.test(email);
+  }
+
+  // Validate group data
+  validateGroupData(groupData) {
+    const errors = [];
+    
+    if (!groupData.name || groupData.name.trim() === '') {
+      errors.push('Group name is required');
+    }
+    
+    if (!groupData.emails || !Array.isArray(groupData.emails) || groupData.emails.length === 0) {
+      errors.push('At least one email address is required');
+    } else {
+      // Validate each email
+      groupData.emails.forEach((email, index) => {
+        if (!this.validateEmail(email)) {
+          errors.push(`Invalid email at position ${index + 1}: ${email}`);
+        }
+      });
+    }
+    
+    if (!groupData.alertTypes || !Array.isArray(groupData.alertTypes) || groupData.alertTypes.length === 0) {
+      errors.push('At least one alert type must be selected');
+    }
+    
+    return {
+      isValid: errors.length === 0,
+      errors
+    };
+  }
+
   // Legacy methods for compatibility
   getEmailList() {
     const data = this.loadEmailList();
