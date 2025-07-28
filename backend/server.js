@@ -2221,10 +2221,12 @@ app.get('/api/kubernetes/pods/enhanced', async (req, res) => {
 });
 
 function isPodReadyComplete(pod) {
+  // Method 1: Check if pod.ready is true (most reliable)
   if (pod.ready === true) {
     return true;
   }
   
+  // Method 2: Parse ready containers vs total containers
   if (pod.readyContainers !== undefined && pod.totalContainers !== undefined) {
     return pod.readyContainers === pod.totalContainers && pod.totalContainers > 0;
   }
@@ -2236,26 +2238,133 @@ function isPodReadyComplete(pod) {
     return readyContainers === totalContainers && totalContainers > 0;
   }
   
-  const incompleteStatuses = [
+  // Method 4: Check status patterns - handle Init containers dynamically
+  const status = pod.status || '';
+  
+  // Basic incomplete statuses
+  const basicIncompleteStatuses = [
     'Pending', 
     'ContainerCreating', 
-    'Init:0/1', 
     'PodInitializing',
-    'Completed' 
+    'Terminating',
+    'Unknown'
   ];
   
-  if (incompleteStatuses.includes(pod.status)) {
+  if (basicIncompleteStatuses.includes(status)) {
     return false;
   }
   
-  if (pod.status === 'Running') {
-    return true;
+  // Handle Init container patterns: Init:X/Y where X < Y
+  if (status.startsWith('Init:')) {
+    const initMatch = status.match(/^Init:(\d+)\/(\d+)$/);
+    if (initMatch) {
+      const currentInit = parseInt(initMatch[1]);
+      const totalInit = parseInt(initMatch[2]);
+      
+      console.log(`🔍 Init container status detected: ${status} (${currentInit}/${totalInit})`);
+      
+      // Init containers are incomplete if current < total
+      const isInitComplete = currentInit === totalInit;
+      if (!isInitComplete) {
+        console.log(`❌ Init containers not complete: ${currentInit} of ${totalInit} ready`);
+        return false;
+      } else {
+        console.log(`✅ Init containers complete: ${currentInit}/${totalInit}`);
+        // Even if init is complete, check if main containers are ready
+        // Fall through to other checks
+      }
+    }
   }
   
+  // Handle Completed status - check if it's a job/init with incomplete ratio
+  if (status === 'Completed') {
+    // For completed pods, check the ready ratio
+    if (pod.readyContainers !== undefined && pod.totalContainers !== undefined) {
+      const isCompleteAndReady = pod.readyContainers === pod.totalContainers;
+      if (!isCompleteAndReady) {
+        console.log(`❌ Completed pod with incomplete ratio: ${pod.readyContainers}/${pod.totalContainers}`);
+        return false;
+      }
+    } else {
+      // If no container info and status is Completed, likely an init/job container
+      console.log(`❌ Completed pod without container status (likely init/job): ${pod.namespace}/${pod.name}`);
+      return false;
+    }
+  }
+  
+  // Handle CrashLoopBackOff and similar error states
+  const errorStatuses = [
+    'CrashLoopBackOff',
+    'ImagePullBackOff',
+    'ErrImagePull',
+    'InvalidImageName',
+    'CreateContainerError',
+    'RunContainerError'
+  ];
+  
+  if (errorStatuses.includes(status)) {
+    console.log(`❌ Pod in error state: ${status}`);
+    return false;
+  }
+  
+  // Handle PodReadyCondition patterns (some k8s versions use this)
+  if (status.includes('PodReadyCondition')) {
+    return false;
+  }
+  
+  // Method 5: Check for partial readiness in pod name patterns
+  // Some systems put readiness info in the pod name or labels
+  const podName = pod.name || '';
+  
+  // Check if pod name suggests it's an init container
+  if (podName.includes('-init-') || podName.includes('-setup-') || podName.includes('-migration-')) {
+    console.log(`🔍 Pod name suggests init/setup container: ${podName}`);
+    
+    // Only include if it's Running AND ready
+    if (status === 'Running' && pod.ready === true) {
+      return true;
+    } else {
+      console.log(`❌ Init/setup container not ready: ${status}, ready: ${pod.ready}`);
+      return false;
+    }
+  }
+  
+  // Method 6: If status is Running, check ready flag more strictly
+  if (status === 'Running') {
+    // For running pods, must have explicit ready=true or proper container ratios
+    if (pod.ready === true) {
+      return true;
+    }
+    
+    // Check container readiness if available
+    if (pod.readyContainers !== undefined && pod.totalContainers !== undefined) {
+      return pod.readyContainers === pod.totalContainers && pod.totalContainers > 0;
+    }
+    
+    // If running but no ready info, be conservative and exclude
+    console.log(`⚠️ Running pod without clear ready status: ${pod.namespace}/${pod.name}`);
+    return false;
+  }
+  
+  // Method 7: Handle Succeeded status (completed jobs)
+  if (status === 'Succeeded') {
+    // Jobs that succeeded should generally be excluded unless specifically needed
+    console.log(`🔍 Succeeded pod (completed job): ${pod.namespace}/${pod.name}`);
+    return false;
+  }
+  
+  // Default: exclude unknown states for safety
+  console.log(`❓ Unknown pod status, excluding for safety: ${status} (${pod.namespace}/${pod.name})`);
   return false;
 }
 
+
 function getPodReadyString(pod) {
+  // Show init container status if present
+  if (pod.status && pod.status.startsWith('Init:')) {
+    return pod.status; // Shows "Init:1/2", "Init:2/3", etc.
+  }
+  
   if (pod.readyContainers !== undefined && pod.totalContainers !== undefined) {
     return `${pod.readyContainers}/${pod.totalContainers}`;
   }
@@ -2266,8 +2375,9 @@ function getPodReadyString(pod) {
     return `${readyContainers}/${totalContainers}`;
   }
   
-  // Fallback: show ready status and pod status
-  return `${pod.ready ? 'Ready' : 'Not Ready'} (${pod.status})`;
+  // Enhanced fallback with more context
+  const readyStatus = pod.ready ? 'Ready' : 'Not Ready';
+  return `${readyStatus} (${pod.status || 'Unknown'})`;
 }
 
 app.get('/api/kubernetes/pods/:namespace/:podName/history', async (req, res) => {
