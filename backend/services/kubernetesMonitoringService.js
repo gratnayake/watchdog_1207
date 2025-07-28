@@ -840,8 +840,8 @@ generateEnhancedAlertSection(title, alerts, color) {
               ${clusterOverview.degraded > 0 ? '<li><strong>Degraded Pods:</strong> Monitor for auto-recovery</li>' : ''}
               ${degraded.length > 0 ? '<li><strong>New degraded:</strong> Monitor for auto-recovery or manual intervention</li>' : ''}
               ${started.length > 0 || recovered.length > 0 ? '<li><strong>Started/Recovered:</strong> Verify functionality and monitor stability</li>' : ''}
-              <li>Dashboard: Access your monitoring dashboard for real-time status</li>
-              <li>Tools: Use kubectl or MTCTL for manual intervention if needed</li>
+              <li>Dashboard: Check the pods real time status through the monitoring tool</li>
+              <li>Uptime WatchDog by Tsunami Solutions - Enterprise Monitoring Platform</li>
             </ul>
           </div>
         </div>
