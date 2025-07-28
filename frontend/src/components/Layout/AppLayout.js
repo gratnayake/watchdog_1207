@@ -21,8 +21,6 @@ import KubernetesConfig from '../Kubernetes/KubernetesConfig';
 import { useMode } from '../../contexts/ModeContext'; 
 import DbSizeThreshold from '../Thresholds/DbSizeThreshold';
 import SimpleScriptManager from '../Scripts/SimpleScriptManager';
-import EnhancedKubernetesMonitoringDashboard from '../Kubernetes/EnhancedKubernetesMonitoringDashboard';
-
 
 const { Content, Footer } = Layout;
 
@@ -96,8 +94,6 @@ const AppLayout = () => {
         return <SystemMetrics />;
       case 'kubernetes':
         return <KubernetesMonitor />;
-      case 'enhanced-kubernetes-monitoring':
-        return <EnhancedKubernetesMonitoringDashboard />;
       case 'url-monitoring':
         return <UrlMonitoring />;      
       case 'kubernetes-config':
@@ -137,8 +133,6 @@ const AppLayout = () => {
         return 'Kubernetes Configuration';
       case 'script-manager':
         return 'Script Manager';
-      case 'enhanced-kubernetes-monitoring':
-        return 'enhanced-kubernetes-monitoring';
       case 'threshold-config':
         return 'Alert Thresholds';
       default:
