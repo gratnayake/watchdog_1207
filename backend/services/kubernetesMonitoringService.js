@@ -549,7 +549,7 @@ async handleInitialWorkloadDetection(workload, emailGroupId) {
     const recovered = this.pendingAlerts.recovered;
     
     // Generate enhanced email with recovery context
-    const subject = `☸️ Kubernetes Alert: ${totalAlerts} workload changes detected`;
+    const subject = `☸️ Kubernetes Alert: ${totalAlerts} pod changes detected`;
     const now = new Date();
     const totalChanges = failed.length + degraded.length + recovered.length;
 
@@ -582,15 +582,15 @@ async handleInitialWorkloadDetection(workload, emailGroupId) {
               </div>
             </div>
 
-            ${this.generateEnhancedAlertSection('🚨 Failed Workloads', failed, '#dc3545')}
-            ${this.generateEnhancedAlertSection('⚠️ Degraded Workloads', degraded, '#ff7f00')}
-            ${this.generateEnhancedAlertSection('✅ Recovered Workloads', recovered, '#28a745')}
+            ${this.generateEnhancedAlertSection('🚨 Failed Pods', failed, '#dc3545')}
+            ${this.generateEnhancedAlertSection('⚠️ Degraded Pods', degraded, '#ff7f00')}
+            ${this.generateEnhancedAlertSection('✅ Recovered Pods', recovered, '#28a745')}
 
             <div style="background-color: #d1ecf1; border: 1px solid #bee5eb; padding: 15px; margin: 20px 0; border-radius: 4px;">
               <h3 style="margin-top: 0; color: #0c5460;">ℹ️ Recovery Context</h3>
               <ul style="color: #0c5460; margin: 10px 0;">
-                <li><strong>Initial Recovery:</strong> Workloads that were unhealthy when monitoring started</li>
-                <li><strong>Normal Recovery:</strong> Workloads that failed and then recovered during monitoring</li>
+                <li><strong>Initial Recovery:</strong> Pods that were unhealthy when monitoring started</li>
+                <li><strong>Normal Recovery:</strong> Pods that failed and then recovered during monitoring</li>
                 <li><strong>Monitoring:</strong> Ignores initially unhealthy pods to prevent false alerts</li>
               </ul>
             </div>
@@ -732,7 +732,7 @@ generateEnhancedAlertSection(title, alerts, color) {
       return `✅ ${clusterHealth}: ${recovered + started} recovered/started, ${clusterOverview.healthy}/${clusterOverview.total} healthy`;
     }
     
-    return `☸️ ${clusterHealth}: ${clusterOverview.healthy}/${clusterOverview.total} workloads healthy`;
+    return `☸️ ${clusterHealth}: ${clusterOverview.healthy}/${clusterOverview.total} Pods healthy`;
   }
 
   // ENHANCED: Generate comprehensive alert content with full cluster status
@@ -821,23 +821,23 @@ generateEnhancedAlertSection(title, alerts, color) {
           </div>
 
           ${this.generateAlertSection('🚨 New Failures', failed, '#dc3545')}
-          ${this.generateAlertSection('🛑 Stopped Workloads', stopped, '#6f42c1')}
+          ${this.generateAlertSection('🛑 Stopped Pods', stopped, '#6f42c1')}
           ${this.generateAlertSection('⚠️ New Degraded', degraded, '#ff7f00')}
-          ${this.generateAlertSection('🚀 Started Workloads', started, '#17a2b8')}
-          ${this.generateAlertSection('✅ Recovered Workloads', recovered, '#28a745')}
+          ${this.generateAlertSection('🚀 Started Pods', started, '#17a2b8')}
+          ${this.generateAlertSection('✅ Recovered Pods', recovered, '#28a745')}
 
           <!-- Current Status Sections -->
-          ${this.generateCurrentStatusSection('❌ Currently Failed Workloads', clusterOverview.failedWorkloads, '#dc3545')}
-          ${this.generateCurrentStatusSection('⚠️ Currently Degraded Workloads', clusterOverview.degradedWorkloads, '#ff7f00')}
-          ${this.generateCurrentStatusSection('✅ Currently Healthy Workloads', clusterOverview.healthyWorkloads, '#28a745')}
+          ${this.generateCurrentStatusSection('❌ Currently Failed Pods', clusterOverview.failedWorkloads, '#dc3545')}
+          ${this.generateCurrentStatusSection('⚠️ Currently Degraded Pods', clusterOverview.degradedWorkloads, '#ff7f00')}
+          ${this.generateCurrentStatusSection('✅ Currently Healthy Pods', clusterOverview.healthyWorkloads, '#28a745')}
 
           <div style="background-color: ${overallHealth === 'critical' ? '#f8d7da' : overallHealth === 'warning' ? '#fff3cd' : '#d4edda'}; border: 1px solid ${overallHealth === 'critical' ? '#f5c6cb' : overallHealth === 'warning' ? '#ffeaa7' : '#c3e6cb'}; padding: 15px; margin: 20px 0; border-radius: 4px;">
             <h3 style="margin-top: 0; color: ${overallHealth === 'critical' ? '#721c24' : overallHealth === 'warning' ? '#856404' : '#155724'};">📋 Recommended Actions</h3>
             <ul style="color: ${overallHealth === 'critical' ? '#721c24' : overallHealth === 'warning' ? '#856404' : '#155724'}; margin: 10px 0;">
-              ${clusterOverview.failed > 0 ? '<li><strong>Critical:</strong> Investigate failed workloads immediately</li>' : ''}
+              ${clusterOverview.failed > 0 ? '<li><strong>Critical:</strong> Investigate failed Pods immediately</li>' : ''}
               ${failed.length > 0 ? '<li><strong>New failures:</strong> Check logs and restart if necessary</li>' : ''}
-              ${stopped.length > 0 ? '<li><strong>Stopped workloads:</strong> Restart when ready (likely MTCTL stop)</li>' : ''}
-              ${clusterOverview.degraded > 0 ? '<li><strong>Degraded workloads:</strong> Monitor for auto-recovery</li>' : ''}
+              ${stopped.length > 0 ? '<li><strong>Stopped Pods:</strong> Restart when ready (likely MTCTL stop)</li>' : ''}
+              ${clusterOverview.degraded > 0 ? '<li><strong>Degraded Pods:</strong> Monitor for auto-recovery</li>' : ''}
               ${degraded.length > 0 ? '<li><strong>New degraded:</strong> Monitor for auto-recovery or manual intervention</li>' : ''}
               ${started.length > 0 || recovered.length > 0 ? '<li><strong>Started/Recovered:</strong> Verify functionality and monitor stability</li>' : ''}
               <li>Dashboard: Access your monitoring dashboard for real-time status</li>
