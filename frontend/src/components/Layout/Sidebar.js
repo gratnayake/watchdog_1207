@@ -13,7 +13,8 @@ import {
   CloudOutlined,
   GlobalOutlined,
   AlertOutlined,
-  CodeOutlined  
+  CodeOutlined,
+  ClusterOutlined 
 } from '@ant-design/icons';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
@@ -63,6 +64,11 @@ const Sidebar = ({ currentPage, onPageChange }) => {
       icon: <CloudOutlined />,
       label: 'Kubernetes Pods',
     },
+    {
+    key: 'enhanced-kubernetes-monitoring',
+    icon: <ClusterOutlined />,
+    label: 'Enhanced K8s Monitor',    
+  },
     {
       key: 'url-monitoring',
       icon: <GlobalOutlined />,
