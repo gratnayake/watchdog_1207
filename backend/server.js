@@ -2109,25 +2109,64 @@ app.get('/api/kubernetes/pods/enhanced', async (req, res) => {
     let currentPods = [];
     try {
       if (namespace === 'all') {
-        currentPods = await kubernetesService.getAllPodsWithContainers(); // Use new method
+        currentPods = await kubernetesService.getAllPodsWithContainers();
       } else {
-        // You might want to create a getPodsWithContainers method for specific namespace too
         currentPods = await kubernetesService.getPods(namespace);
       }
+      
+      // APPLY FILTERING HERE - Remove pods with incomplete READY status
+      const filteredCurrentPods = currentPods.filter(pod => {
+        // Always exclude deleted pods
+        if (pod.isDeleted) {
+          return false;
+        }
+        
+        // Check if pod's READY status is complete
+        const isReadyComplete = isPodReadyComplete(pod);
+        
+        if (!isReadyComplete) {
+          console.log(`🔍 Filtering out pod with incomplete READY status: ${pod.namespace}/${pod.name} (Ready: ${getPodReadyString(pod)}, Status: ${pod.status})`);
+          return false;
+        }
+        
+        return true;
+      });
+      
+      console.log(`📊 Filtered ${currentPods.length - filteredCurrentPods.length} pods with incomplete READY status`);
+      currentPods = filteredCurrentPods;
+      
     } catch (k8sError) {
       console.log('⚠️ Could not fetch current pods from K8s:', k8sError.message);
-      // Continue with lifecycle service data only
     }
     
-    // Update lifecycle tracking with current pods
+    // Update lifecycle tracking with FILTERED current pods
     const changes = await podLifecycleService.updatePodLifecycle(currentPods);
     
     // Get comprehensive pod list including historical data
-    const comprehensivePods = podLifecycleService.getComprehensivePodList({
+    let comprehensivePods = podLifecycleService.getComprehensivePodList({
       includeDeleted: includeDeleted === 'true',
       namespace: namespace === 'all' ? null : namespace,
       maxAge: maxAge ? parseInt(maxAge) : null,
       sortBy
+    });
+    
+    // ALSO FILTER the comprehensive pod list to exclude incomplete pods
+    comprehensivePods = comprehensivePods.filter(pod => {
+      // Always show deleted pods if includeDeleted is true (for historical tracking)
+      if (pod.isDeleted && includeDeleted === 'true') {
+        return true;
+      }
+      
+      // For non-deleted pods, check if READY status is complete
+      if (!pod.isDeleted) {
+        const isReadyComplete = isPodReadyComplete(pod);
+        if (!isReadyComplete) {
+          console.log(`🔍 Filtering out comprehensive pod with incomplete READY: ${pod.namespace}/${pod.name}`);
+          return false;
+        }
+      }
+      
+      return true;
     });
     
     // Merge current pod data (with container info) with lifecycle data
@@ -2152,7 +2191,7 @@ app.get('/api/kubernetes/pods/enhanced', async (req, res) => {
         ...lifecyclePod,
         containers: [],
         readyContainers: 0,
-        totalContainers: 1, // Assume single container for deleted pods
+        totalContainers: 1,
         readinessRatio: lifecyclePod.isDeleted ? '0/1' : '0/1'
       };
     });
@@ -2160,7 +2199,7 @@ app.get('/api/kubernetes/pods/enhanced', async (req, res) => {
     // Get statistics
     const stats = podLifecycleService.getPodStatistics(namespace === 'all' ? null : namespace);
     
-    console.log(`✅ Enhanced pods response: ${enrichedPods.length} pods with container details`);
+    console.log(`✅ Enhanced pods response: ${enrichedPods.length} pods (incomplete READY pods filtered out)`);
     
     res.json({
       success: true,
@@ -2180,6 +2219,56 @@ app.get('/api/kubernetes/pods/enhanced', async (req, res) => {
     });
   }
 });
+
+function isPodReadyComplete(pod) {
+  if (pod.ready === true) {
+    return true;
+  }
+  
+  if (pod.readyContainers !== undefined && pod.totalContainers !== undefined) {
+    return pod.readyContainers === pod.totalContainers && pod.totalContainers > 0;
+  }
+  
+  // Method 3: Parse from containerStatuses if available
+  if (pod.containerStatuses && Array.isArray(pod.containerStatuses)) {
+    const readyContainers = pod.containerStatuses.filter(c => c.ready === true).length;
+    const totalContainers = pod.containerStatuses.length;
+    return readyContainers === totalContainers && totalContainers > 0;
+  }
+  
+  const incompleteStatuses = [
+    'Pending', 
+    'ContainerCreating', 
+    'Init:0/1', 
+    'PodInitializing',
+    'Completed' 
+  ];
+  
+  if (incompleteStatuses.includes(pod.status)) {
+    return false;
+  }
+  
+  if (pod.status === 'Running') {
+    return true;
+  }
+  
+  return false;
+}
+
+function getPodReadyString(pod) {
+  if (pod.readyContainers !== undefined && pod.totalContainers !== undefined) {
+    return `${pod.readyContainers}/${pod.totalContainers}`;
+  }
+  
+  if (pod.containerStatuses && Array.isArray(pod.containerStatuses)) {
+    const readyContainers = pod.containerStatuses.filter(c => c.ready === true).length;
+    const totalContainers = pod.containerStatuses.length;
+    return `${readyContainers}/${totalContainers}`;
+  }
+  
+  // Fallback: show ready status and pod status
+  return `${pod.ready ? 'Ready' : 'Not Ready'} (${pod.status})`;
+}
 
 app.get('/api/kubernetes/pods/:namespace/:podName/history', async (req, res) => {
   try {
