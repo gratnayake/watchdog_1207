@@ -212,7 +212,7 @@ class KubernetesMonitoringService {
 
 
   // Enhanced checkPodHealth - now monitors workloads
-  async checkPodHealth() {
+ async checkPodHealth() {
   try {
     console.log('☸️ Checking Kubernetes workload health...');
     
@@ -222,10 +222,10 @@ class KubernetesMonitoringService {
       return;
     }
 
-    // Get current workload status using enhanced kubernetesService
-    const currentWorkloads = await this.getWorkloadStatus();
+    // Get current workload status with filtering
+    const currentWorkloads = await this.getWorkloadStatusWithInitialFilter();
     
-    console.log(`✅ Retrieved ${currentWorkloads.length} workloads from cluster`);
+    console.log(`✅ Retrieved ${currentWorkloads.length} workloads from cluster (unhealthy excluded from initial snapshot)`);
 
     // Compare with previous state and detect changes
     for (const workload of currentWorkloads) {
@@ -242,8 +242,7 @@ class KubernetesMonitoringService {
       if (previousStatus) {
         await this.detectWorkloadChanges(workload, previousStatus, config.emailGroupId);
       } else {
-        // NEW LOGIC: Handle initial detection with filtering
-        await this.handleInitialWorkloadDetection(workload, config.emailGroupId);
+        console.log(`🆕 New healthy workload detected: ${workloadKey} (${workload.readyReplicas}/${workload.desiredReplicas})`);
       }
     }
 
@@ -252,6 +251,64 @@ class KubernetesMonitoringService {
 
   } catch (error) {
     console.error('❌ Workload health check failed:', error);
+  }
+}
+
+async getWorkloadStatusWithInitialFilter() {
+  try {
+    // Get all pods first
+    const allPods = await kubernetesService.getAllPods();
+    
+    // Filter out unhealthy pods if this is initial startup
+    const isInitialStartup = this.workloadStatuses.size === 0;
+    let filteredPods = allPods;
+    
+    if (isInitialStartup) {
+      console.log(`🔍 Initial startup detected - filtering unhealthy pods from snapshot`);
+      
+      const originalCount = allPods.length;
+      
+      filteredPods = allPods.filter(pod => {
+        // ALWAYS exclude deleted pods
+        if (pod.isDeleted) {
+          console.log(`🗑️ Excluding deleted pod: ${pod.namespace}/${pod.name}`);
+          return false;
+        }
+        
+        // EXCLUDE pods that are not fully ready
+        const isFullyReady = pod.ready && pod.status === 'Running';
+        
+        if (!isFullyReady) {
+          console.log(`❌ Excluding unhealthy pod from initial snapshot: ${pod.namespace}/${pod.name} (Status: ${pod.status}, Ready: ${pod.ready})`);
+          return false;
+        }
+        
+        // INCLUDE healthy pods
+        console.log(`✅ Including healthy pod in initial snapshot: ${pod.namespace}/${pod.name}`);
+        return true;
+      });
+      
+      const excludedCount = originalCount - filteredPods.length;
+      console.log(`📊 Initial snapshot: ${filteredPods.length} healthy pods included, ${excludedCount} unhealthy pods excluded`);
+    } else {
+      // After initial startup, monitor all pods (but still exclude deleted ones)
+      filteredPods = allPods.filter(pod => {
+        if (pod.isDeleted) {
+          return false; // Always exclude deleted pods
+        }
+        return true;
+      });
+      
+      console.log(`📊 Regular monitoring: tracking ${filteredPods.length} pods (${allPods.length - filteredPods.length} deleted pods excluded)`);
+    }
+    
+    // Group filtered pods by their owner (deployment/statefulset/etc)
+    const workloads = this.groupPodsByWorkload(filteredPods);
+    
+    return workloads;
+  } catch (error) {
+    console.error('Failed to get filtered workload status:', error);
+    return [];
   }
 }
 
@@ -373,7 +430,7 @@ async handleInitialWorkloadDetection(workload, emailGroupId) {
   const currentHealthyPods = current.pods.filter(p => p.ready && p.status === 'Running').length;
   const currentDesiredReplicas = current.desiredReplicas || current.pods.length;
   
-  // Get previous status - handle missing/corrupt data
+  // Get previous status
   const previousHealthyPods = previous.pods ? 
     previous.pods.filter(p => p.ready && p.status === 'Running').length : 0;
   const previousDesiredReplicas = previous.desiredReplicas || previous.pods?.length || 0;
@@ -381,69 +438,40 @@ async handleInitialWorkloadDetection(workload, emailGroupId) {
   console.log(`🔍 Workload change check: ${workloadKey}`);
   console.log(`   Current: ${currentHealthyPods}/${currentDesiredReplicas} healthy`);
   console.log(`   Previous: ${previousHealthyPods}/${previousDesiredReplicas} healthy`);
-  console.log(`   Was ignored initial: ${previous.ignoredInitial || false}`);
 
-  // SPECIAL CASE: Handle recovery from initially ignored state
-  if (previous.ignoredInitial && previous.initialState === 'unhealthy') {
-    console.log(`🔍 Checking recovery from initially ignored unhealthy state...`);
-    
-    // Check if workload is now healthy
-    if (currentHealthyPods === currentDesiredReplicas && currentHealthyPods > 0) {
-      console.log(`✅ WORKLOAD RECOVERED FROM INITIAL UNHEALTHY STATE: ${workloadKey}`);
-      console.log(`   Now healthy: ${currentHealthyPods}/${currentDesiredReplicas} pods ready`);
-      
-      // Clear the ignored flag and update status
-      const updatedWorkload = {
-        ...current,
-        lastSeen: new Date(),
-        ignoredInitial: false, // Clear the ignored flag
-        recoveredFromInitial: true,
-        recoveryTime: new Date()
-      };
-      
-      this.workloadStatuses.set(workloadKey, updatedWorkload);
-      
-      // Send recovery alert with special context
-      this.addToBatchAlert('recovered', current, emailGroupId, 'initial_recovery');
-      return;
-    } else {
-      // Still unhealthy, continue ignoring
-      console.log(`⚠️ Workload still unhealthy, continuing to ignore: ${workloadKey}`);
-      return;
-    }
-  }
-
-  // SCENARIO 1: Workload was down/critical and is now healthy (NORMAL RECOVERY)
-  if (currentHealthyPods === currentDesiredReplicas && 
-      currentHealthyPods > 0 && 
-      (previousHealthyPods === 0 || previous.status === 'critical')) {
-    
-    console.log(`✅ Workload RECOVERED: ${workloadKey} (${currentHealthyPods}/${currentDesiredReplicas} healthy)`);
-    this.addToBatchAlert('recovered', current, emailGroupId, 'normal_recovery');
-    return;
-  }
-
-  // SCENARIO 2: Workload was healthy and is now degraded
-  if (currentHealthyPods < currentDesiredReplicas && 
-      currentHealthyPods > 0 && 
-      previousHealthyPods >= previousDesiredReplicas) {
-    
+  // SCENARIO 1: Workload degraded (was healthy, now has issues)
+  if (currentHealthyPods < currentDesiredReplicas && previousHealthyPods >= previousDesiredReplicas) {
     console.log(`⚠️ Workload DEGRADED: ${workloadKey} (${currentHealthyPods}/${currentDesiredReplicas} healthy)`);
-    this.addToBatchAlert('degraded', current, emailGroupId, 'normal_degradation');
+    this.addToBatchAlert('degraded', current, emailGroupId);
     return;
   }
 
-  // SCENARIO 3: Workload was running and is now completely failed
-  if (currentHealthyPods === 0 && 
-      currentDesiredReplicas > 0 && 
-      previousHealthyPods > 0) {
-    
+  // SCENARIO 2: Workload completely failed (all pods down)
+  if (currentHealthyPods === 0 && previousHealthyPods > 0) {
     console.log(`💥 Workload FAILED: ${workloadKey}`);
-    this.addToBatchAlert('failed', current, emailGroupId, 'normal_failure');
+    this.addToBatchAlert('failed', current, emailGroupId);
     return;
   }
 
-  // Log no change detected
+  // SCENARIO 3: Workload recovered (was degraded, now healthy)
+  if (currentHealthyPods === currentDesiredReplicas && previousHealthyPods < previousDesiredReplicas) {
+    console.log(`✅ Workload RECOVERED: ${workloadKey} (${currentHealthyPods}/${currentDesiredReplicas} healthy)`);
+    this.addToBatchAlert('recovered', current, emailGroupId);
+    return;
+  }
+
+  // SCENARIO 4: New pods added to existing workload (scaling up)
+  if (currentDesiredReplicas > previousDesiredReplicas) {
+    console.log(`📈 Workload SCALED UP: ${workloadKey} (${previousDesiredReplicas} → ${currentDesiredReplicas} pods)`);
+    // Don't alert on scaling up unless there are failures
+    if (currentHealthyPods < currentDesiredReplicas) {
+      console.log(`⚠️ Scaling up but some pods failed: ${workloadKey}`);
+      this.addToBatchAlert('degraded', current, emailGroupId);
+    }
+    return;
+  }
+
+  // Log no significant change
   console.log(`➡️ No significant change for ${workloadKey}`);
 }
 
@@ -955,7 +983,7 @@ generateEnhancedAlertSection(title, alerts, color) {
           name: workloadInfo.name,
           namespace: workloadInfo.namespace,
           pods: [],
-          desiredReplicas: 0, // Will be calculated
+          desiredReplicas: 0, // Will be calculated based on actual pods
           readyReplicas: 0,
           status: 'unknown'
         });
@@ -977,9 +1005,10 @@ generateEnhancedAlertSection(title, alerts, color) {
       }
     });
 
-    // Convert map to array and calculate health
+    // Convert map to array and calculate health based on INCLUDED pods only
     return Array.from(workloadMap.values()).map(workload => {
-      workload.desiredReplicas = workload.pods.length; // For now, assume current count is desired
+      // For filtered workloads, desired replicas = actual pods we're tracking
+      workload.desiredReplicas = workload.pods.length;
       workload.status = this.calculateWorkloadHealth(workload);
       return workload;
     });
