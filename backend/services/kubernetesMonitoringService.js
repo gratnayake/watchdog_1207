@@ -213,74 +213,81 @@ class KubernetesMonitoringService {
 
   // Enhanced checkPodHealth - now monitors workloads
   async checkPodHealth() {
-    try {
-      console.log('☸️ Checking Kubernetes workload health...');
-      
-      const config = kubernetesConfigService.getConfig();
-      if (!config.isConfigured) {
-        console.log('⚠️ Kubernetes not configured - skipping workload health check');
-        return;
-      }
-
-      // Get current workload status using enhanced kubernetesService
-      const currentWorkloads = await this.getWorkloadStatus();
-      
-      console.log(`✅ Retrieved ${currentWorkloads.length} workloads from cluster`);
-
-      // Skip alerts during initialization period
-      if (!this.initializationComplete) {
-        console.log('⏳ Still in initialization grace period - updating baseline only');
-        
-        // Update baseline without alerts
-        for (const workload of currentWorkloads) {
-          const workloadKey = `${workload.type}/${workload.name}/${workload.namespace}`;
-          this.workloadStatuses.set(workloadKey, {
-            ...workload,
-            lastSeen: new Date(),
-            isBaseline: true
-          });
-        }
-        
-        return;
-      }
-
-      // CRITICAL: Detect missing workloads BEFORE processing current ones
-      await this.detectMissingWorkloads(currentWorkloads, config.emailGroupId);
-
-      // Compare with previous state and detect changes
-      for (const workload of currentWorkloads) {
-        const workloadKey = `${workload.type}/${workload.name}/${workload.namespace}`;
-        const previousStatus = this.workloadStatuses.get(workloadKey);
-        
-        // Store current status
-        this.workloadStatuses.set(workloadKey, {
-          ...workload,
-          lastSeen: new Date(),
-          isBaseline: false  // No longer baseline data
-        });
-
-        // Check for status changes (only after initialization)
-        if (previousStatus && !previousStatus.isBaseline) {
-          await this.detectWorkloadChanges(workload, previousStatus, config.emailGroupId);
-        } else if (previousStatus && previousStatus.isBaseline) {
-          // First real check after baseline - only alert on significant issues
-          await this.detectSignificantChangesFromBaseline(workload, previousStatus, config.emailGroupId);
-        } else {
-          console.log(`🆕 New workload detected after baseline: ${workloadKey}`);
-          // This is a genuinely new workload, so we can alert about it
-          this.addToBatchAlert('started', workload, config.emailGroupId, {
-            reason: 'New workload appeared after monitoring started'
-          });
-        }
-      }
-
-      // Clean up old workload statuses AFTER detecting missing ones
-      this.cleanupDeletedWorkloads(currentWorkloads);
-
-    } catch (error) {
-      console.error('❌ Workload health check failed:', error);
+  try {
+    console.log('☸️ Checking Kubernetes workload health...');
+    
+    const config = kubernetesConfigService.getConfig();
+    if (!config.isConfigured) {
+      console.log('⚠️ Kubernetes not configured - skipping workload health check');
+      return;
     }
+
+    // Get current workload status using enhanced kubernetesService
+    const currentWorkloads = await this.getWorkloadStatus();
+    
+    console.log(`✅ Retrieved ${currentWorkloads.length} workloads from cluster`);
+
+    // Compare with previous state and detect changes
+    for (const workload of currentWorkloads) {
+      const workloadKey = `${workload.type}/${workload.name}/${workload.namespace}`;
+      const previousStatus = this.workloadStatuses.get(workloadKey);
+      
+      // Store current status
+      this.workloadStatuses.set(workloadKey, {
+        ...workload,
+        lastSeen: new Date()
+      });
+
+      // Check for status changes
+      if (previousStatus) {
+        await this.detectWorkloadChanges(workload, previousStatus, config.emailGroupId);
+      } else {
+        // NEW LOGIC: Handle initial detection with filtering
+        await this.handleInitialWorkloadDetection(workload, config.emailGroupId);
+      }
+    }
+
+    // Clean up old workload statuses
+    this.cleanupDeletedWorkloads(currentWorkloads);
+
+  } catch (error) {
+    console.error('❌ Workload health check failed:', error);
   }
+}
+
+async handleInitialWorkloadDetection(workload, emailGroupId) {
+  const workloadKey = `${workload.type}/${workload.name}/${workload.namespace}`;
+  
+  // Check if workload is healthy (all pods ready)
+  const isHealthy = workload.readyReplicas === workload.desiredReplicas && workload.readyReplicas > 0;
+  
+  console.log(`🆕 Initial workload detection: ${workloadKey}`);
+  console.log(`   Status: ${workload.status} (${workload.readyReplicas}/${workload.desiredReplicas})`);
+  console.log(`   Is Healthy: ${isHealthy}`);
+  
+  if (isHealthy) {
+    // Workload is healthy - add to monitoring normally
+    console.log(`✅ Adding healthy workload to monitoring: ${workloadKey}`);
+  } else {
+    // Workload is unhealthy - add but mark as "ignored_initial"
+    console.log(`⚠️ Ignoring unhealthy workload in initial snapshot: ${workloadKey}`);
+    console.log(`   Reason: Only ${workload.readyReplicas}/${workload.desiredReplicas} pods ready`);
+    
+    // Mark this workload as initially unhealthy so we don't alert on its recovery
+    const enhancedWorkload = {
+      ...workload,
+      lastSeen: new Date(),
+      ignoredInitial: true, // Mark as ignored in initial snapshot
+      initialState: 'unhealthy',
+      initialDetectionTime: new Date()
+    };
+    
+    this.workloadStatuses.set(workloadKey, enhancedWorkload);
+    
+    // Don't send any alerts for initially unhealthy workloads
+    return;
+  }
+}
 
    async detectSignificantChangesFromBaseline(current, baseline, emailGroupId) {
     const workloadKey = `${current.type}/${current.name}/${current.namespace}`;
@@ -359,7 +366,7 @@ class KubernetesMonitoringService {
   }
 
   // ENHANCED: Detection logic to catch MTCTL stops and more
-  async detectWorkloadChanges(current, previous, emailGroupId) {
+ async detectWorkloadChanges(current, previous, emailGroupId) {
   const workloadKey = `${current.type}/${current.name}/${current.namespace}`;
 
   // Get current status
@@ -374,14 +381,45 @@ class KubernetesMonitoringService {
   console.log(`🔍 Workload change check: ${workloadKey}`);
   console.log(`   Current: ${currentHealthyPods}/${currentDesiredReplicas} healthy`);
   console.log(`   Previous: ${previousHealthyPods}/${previousDesiredReplicas} healthy`);
+  console.log(`   Was ignored initial: ${previous.ignoredInitial || false}`);
 
-  // SCENARIO 1: Workload was down/critical and is now healthy (RECOVERY)
+  // SPECIAL CASE: Handle recovery from initially ignored state
+  if (previous.ignoredInitial && previous.initialState === 'unhealthy') {
+    console.log(`🔍 Checking recovery from initially ignored unhealthy state...`);
+    
+    // Check if workload is now healthy
+    if (currentHealthyPods === currentDesiredReplicas && currentHealthyPods > 0) {
+      console.log(`✅ WORKLOAD RECOVERED FROM INITIAL UNHEALTHY STATE: ${workloadKey}`);
+      console.log(`   Now healthy: ${currentHealthyPods}/${currentDesiredReplicas} pods ready`);
+      
+      // Clear the ignored flag and update status
+      const updatedWorkload = {
+        ...current,
+        lastSeen: new Date(),
+        ignoredInitial: false, // Clear the ignored flag
+        recoveredFromInitial: true,
+        recoveryTime: new Date()
+      };
+      
+      this.workloadStatuses.set(workloadKey, updatedWorkload);
+      
+      // Send recovery alert with special context
+      this.addToBatchAlert('recovered', current, emailGroupId, 'initial_recovery');
+      return;
+    } else {
+      // Still unhealthy, continue ignoring
+      console.log(`⚠️ Workload still unhealthy, continuing to ignore: ${workloadKey}`);
+      return;
+    }
+  }
+
+  // SCENARIO 1: Workload was down/critical and is now healthy (NORMAL RECOVERY)
   if (currentHealthyPods === currentDesiredReplicas && 
       currentHealthyPods > 0 && 
       (previousHealthyPods === 0 || previous.status === 'critical')) {
     
     console.log(`✅ Workload RECOVERED: ${workloadKey} (${currentHealthyPods}/${currentDesiredReplicas} healthy)`);
-    this.addToBatchAlert('recovered', current, emailGroupId);
+    this.addToBatchAlert('recovered', current, emailGroupId, 'normal_recovery');
     return;
   }
 
@@ -391,7 +429,7 @@ class KubernetesMonitoringService {
       previousHealthyPods >= previousDesiredReplicas) {
     
     console.log(`⚠️ Workload DEGRADED: ${workloadKey} (${currentHealthyPods}/${currentDesiredReplicas} healthy)`);
-    this.addToBatchAlert('degraded', current, emailGroupId);
+    this.addToBatchAlert('degraded', current, emailGroupId, 'normal_degradation');
     return;
   }
 
@@ -401,19 +439,7 @@ class KubernetesMonitoringService {
       previousHealthyPods > 0) {
     
     console.log(`💥 Workload FAILED: ${workloadKey}`);
-    this.addToBatchAlert('failed', current, emailGroupId);
-    return;
-  }
-
-  // SCENARIO 4: Handle initial snapshot case (first time seeing this workload)
-  if (!previous.lastSeen || !previous.pods) {
-    console.log(`🆕 Initial workload detection: ${workloadKey} - Status: ${current.status}`);
-    
-    // Only alert if workload is currently unhealthy on first detection
-    if (current.status === 'critical' && currentHealthyPods === 0) {
-      console.log(`🚨 New workload detected as CRITICAL: ${workloadKey}`);
-      this.addToBatchAlert('failed', current, emailGroupId);
-    }
+    this.addToBatchAlert('failed', current, emailGroupId, 'normal_failure');
     return;
   }
 
@@ -423,30 +449,21 @@ class KubernetesMonitoringService {
 
 
   // Enhanced method to collect alerts for batching
-  addToBatchAlert(alertType, workload, emailGroupId, metadata = {}) {
+  addToBatchAlert(alertType, workload, emailGroupId, reason = 'unknown') {
     if (!emailGroupId) {
       console.log('⚠️ No email group configured for workload alerts');
       return;
     }
 
-    // Skip alerts during initialization
-    if (!this.initializationComplete) {
-      console.log('⏳ Skipping alert during initialization period');
-      return;
-    }
-
-    // Add to pending alerts with enhanced metadata
+    // Add to pending alerts with enhanced context
     this.pendingAlerts[alertType].push({
       workload: workload,
       timestamp: new Date(),
       emailGroupId: emailGroupId,
-      metadata: {
-        ...metadata,
-        postBaseline: true  // Mark as post-baseline alert
-      }
+      reason: reason // Add reason for better email context
     });
 
-    console.log(`📝 Added ${alertType.toUpperCase()} alert for ${workload.name} to batch (${this.getTotalPendingAlerts()} total pending)`);
+    console.log(`📝 Added ${alertType} alert for ${workload.name} to batch (reason: ${reason}) - ${this.getTotalPendingAlerts()} total pending`);
 
     // Schedule batch send (or reset timer if already scheduled)
     this.scheduleBatchAlert(emailGroupId);
@@ -479,52 +496,138 @@ class KubernetesMonitoringService {
 
   // ENHANCED: Send comprehensive batch alert with full cluster status
   async sendBatchAlert(emailGroupId) {
+  try {
+    const totalAlerts = this.getTotalPendingAlerts();
+    
+    if (totalAlerts === 0) {
+      console.log('📧 No pending alerts to send');
+      return;
+    }
+
+    console.log(`📧 Sending batch alert with ${totalAlerts} workload changes...`);
+
+    const groups = emailService.getEmailGroups();
+    const targetGroup = groups.find(g => g.id == emailGroupId);
+    
+    if (!targetGroup || !targetGroup.enabled) {
+      console.log('❌ Email group not found or disabled');
+      this.clearPendingAlerts();
+      return;
+    }
+
+    // Categorize alerts
+    const failed = this.pendingAlerts.failed;
+    const degraded = this.pendingAlerts.degraded;
+    const recovered = this.pendingAlerts.recovered;
+    
+    // Generate enhanced email with recovery context
+    const subject = `☸️ Kubernetes Alert: ${totalAlerts} workload changes detected`;
+    const now = new Date();
+    const totalChanges = failed.length + degraded.length + recovered.length;
+
+    const mailOptions = {
+      from: emailService.getEmailConfig().user,
+      to: targetGroup.emails,
+      subject: subject,
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <div style="background-color: ${failed.length > 0 ? 
+            '#dc3545' : degraded.length > 0 ? '#ff7f00' : '#28a745'}; color: white; padding: 20px; text-align: center;">
+            <h1 style="margin: 0; font-size: 24px;">☸️ KUBERNETES ALERT</h1>
+            <p style="margin: 8px 0 0 0; font-size: 16px;">${totalChanges} workload changes detected</p>
+          </div>
+          
+          <div style="background-color: #f8f9fa; padding: 20px;">
+            <h2 style="margin-top: 0; color: #333;">Summary</h2>
+            <div style="display: flex; justify-content: space-around; margin: 20px 0;">
+              <div style="text-align: center; padding: 15px; background: white; border-radius: 8px; min-width: 80px;">
+                <div style="font-size: 24px; font-weight: bold; color: #dc3545;">${failed.length}</div>
+                <div style="font-size: 12px; color: #666;">Failed</div>
+              </div>
+              <div style="text-align: center; padding: 15px; background: white; border-radius: 8px; min-width: 80px;">
+                <div style="font-size: 24px; font-weight: bold; color: #ff7f00;">${degraded.length}</div>
+                <div style="font-size: 12px; color: #666;">Degraded</div>
+              </div>
+              <div style="text-align: center; padding: 15px; background: white; border-radius: 8px; min-width: 80px;">
+                <div style="font-size: 24px; font-weight: bold; color: #28a745;">${recovered.length}</div>
+                <div style="font-size: 12px; color: #666;">Recovered</div>
+              </div>
+            </div>
+
+            ${this.generateEnhancedAlertSection('🚨 Failed Workloads', failed, '#dc3545')}
+            ${this.generateEnhancedAlertSection('⚠️ Degraded Workloads', degraded, '#ff7f00')}
+            ${this.generateEnhancedAlertSection('✅ Recovered Workloads', recovered, '#28a745')}
+
+            <div style="background-color: #d1ecf1; border: 1px solid #bee5eb; padding: 15px; margin: 20px 0; border-radius: 4px;">
+              <h3 style="margin-top: 0; color: #0c5460;">ℹ️ Recovery Context</h3>
+              <ul style="color: #0c5460; margin: 10px 0;">
+                <li><strong>Initial Recovery:</strong> Workloads that were unhealthy when monitoring started</li>
+                <li><strong>Normal Recovery:</strong> Workloads that failed and then recovered during monitoring</li>
+                <li><strong>Monitoring:</strong> Ignores initially unhealthy pods to prevent false alerts</li>
+              </ul>
+            </div>
+          </div>
+          
+          <div style="background-color: #e9ecef; padding: 15px; text-align: center; font-size: 12px; color: #6c757d;">
+            <p style="margin: 0;">Alert sent to: ${targetGroup.name}</p>
+            <p style="margin: 5px 0 0 0;">Generated at: ${now.toLocaleString()}</p>
+          </div>
+        </div>
+      `
+    };
+
     try {
-      const totalAlerts = this.getTotalPendingAlerts();
-      
-      if (totalAlerts === 0) {
-        console.log('📧 No pending alerts to send');
-        return;
-      }
-
-      console.log(`📧 Sending COMPREHENSIVE batch alert with ${totalAlerts} workload changes...`);
-
-      const groups = emailService.getEmailGroups();
-      const targetGroup = groups.find(g => g.id === emailGroupId && g.enabled);
-      
-      if (!targetGroup || targetGroup.emails.length === 0) {
-        console.log('⚠️ No valid email group found for batch alerts');
-        this.clearPendingAlerts();
-        return;
-      }
-
-      // GET CURRENT CLUSTER STATUS for comprehensive overview
-      const currentWorkloads = await this.getWorkloadStatus();
-      const clusterOverview = this.generateClusterOverview(currentWorkloads);
-
-      const subject = this.getComprehensiveAlertSubject(clusterOverview);
-      const htmlContent = this.getComprehensiveAlertContent(targetGroup.name, clusterOverview);
-
-      const mailOptions = {
-        from: emailService.getEmailConfig().user,
-        to: targetGroup.emails.join(','),
-        subject: subject,
-        html: htmlContent
-      };
-
       await emailService.transporter.sendMail(mailOptions);
-      
-      console.log(`📧 ✅ COMPREHENSIVE batch alert sent successfully with ${totalAlerts} changes + cluster overview`);
+      console.log('📧 ✅ Enhanced batch alert sent successfully');
       
       // Clear pending alerts after successful send
       this.clearPendingAlerts();
-
+      
     } catch (error) {
-      console.error(`📧 ❌ Failed to send batch alert:`, error);
-      // Don't clear alerts on failure - they'll be retried next cycle
+      console.error('📧 ❌ Failed to send batch alert:', error);
     }
-  }
 
+  } catch (error) {
+    console.error('❌ Batch alert generation failed:', error);
+  }
+}
+generateEnhancedAlertSection(title, alerts, color) {
+  if (alerts.length === 0) return '';
+
+  return `
+    <div style="margin: 20px 0;">
+      <h3 style="color: ${color}; margin-bottom: 15px;">${title}</h3>
+      <table style="width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden;">
+        <thead>
+          <tr style="background-color: ${color}; color: white;">
+            <th style="padding: 12px; text-align: left;">Workload</th>
+            <th style="padding: 12px; text-align: left;">Namespace</th>
+            <th style="padding: 12px; text-align: left;">Pods</th>
+            <th style="padding: 12px; text-align: left;">Context</th>
+            <th style="padding: 12px; text-align: left;">Time</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${alerts.map((alert, index) => `
+            <tr style="background-color: ${index % 2 === 0 ? '#f8f9fa' : 'white'};">
+              <td style="padding: 12px; font-weight: bold;">${alert.workload.name}</td>
+              <td style="padding: 12px;">${alert.workload.namespace}</td>
+              <td style="padding: 12px;">${alert.workload.readyReplicas}/${alert.workload.desiredReplicas}</td>
+              <td style="padding: 12px; font-size: 11px;">
+                ${alert.reason === 'initial_recovery' ? '🔄 Initial Recovery' : 
+                  alert.reason === 'normal_recovery' ? '✅ Normal Recovery' : 
+                  alert.reason === 'normal_degradation' ? '⚠️ Degradation' : 
+                  alert.reason === 'normal_failure' ? '💥 Failure' : 
+                  alert.reason || 'Unknown'}
+              </td>
+              <td style="padding: 12px; font-size: 11px; color: #666;">${alert.timestamp.toLocaleTimeString()}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
   // NEW: Generate comprehensive cluster overview
   generateClusterOverview(currentWorkloads) {
     const overview = {
