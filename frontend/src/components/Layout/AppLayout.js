@@ -21,6 +21,7 @@ import KubernetesConfig from '../Kubernetes/KubernetesConfig';
 import { useMode } from '../../contexts/ModeContext'; 
 import DbSizeThreshold from '../Thresholds/DbSizeThreshold';
 import SimpleScriptManager from '../Scripts/SimpleScriptManager';
+import SystemHeartbeatConfig from '../System/SystemHeartbeatConfig';
 
 const { Content, Footer } = Layout;
 
@@ -102,6 +103,8 @@ const AppLayout = () => {
         return isAdmin ? <DbSizeThreshold /> : <RealtimeDashboard />;
       case 'script-manager':
         return <SimpleScriptManager />;
+      case 'system-heartbeat':
+        return <SystemHeartbeatConfig />;
       default:
         return <RealtimeDashboard />;
     }

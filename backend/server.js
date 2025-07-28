@@ -16,6 +16,7 @@ const podActionsService = require('./services/podActionsService');
 const kubernetesMonitoringService = require('./services/kubernetesMonitoringService');
 const podLifecycleService = require('./services/podLifecycleService');
 const scriptService = require('./services/scriptService');
+const systemHeartbeatService = require('./services/systemHeartbeatService');
 
 
 const { exec } = require('child_process');
@@ -2631,6 +2632,161 @@ app.get('/api/kubernetes/monitoring/stats', (req, res) => {
   }
 });
 
+// Get heartbeat configuration
+app.get('/api/system/heartbeat/config', (req, res) => {
+  try {
+    const config = systemHeartbeatService.getConfig();
+    res.json({ 
+      success: true, 
+      data: config 
+    });
+  } catch (error) {
+    console.error('❌ Get heartbeat config error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message 
+    });
+  }
+});
+
+// Save heartbeat configuration
+app.post('/api/system/heartbeat/config', (req, res) => {
+  try {
+    const configData = req.body;
+    
+    // Validate required fields
+    if (configData.enabled && !configData.emailGroupId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Email group is required when heartbeat is enabled'
+      });
+    }
+
+    if (configData.intervalMinutes < 5) {
+      return res.status(400).json({
+        success: false,
+        error: 'Interval must be at least 5 minutes'
+      });
+    }
+
+    const saved = systemHeartbeatService.saveConfig(configData);
+    
+    if (saved) {
+      // Restart heartbeat service with new config
+      systemHeartbeatService.stopHeartbeat();
+      
+      if (configData.enabled) {
+        setTimeout(() => {
+          systemHeartbeatService.startHeartbeat();
+        }, 1000);
+      }
+
+      console.log('💓 Heartbeat configuration saved successfully');
+      res.json({ 
+        success: true, 
+        message: 'Heartbeat configuration saved successfully',
+        data: systemHeartbeatService.getConfig()
+      });
+    } else {
+      res.status(500).json({ 
+        success: false, 
+        error: 'Failed to save heartbeat configuration' 
+      });
+    }
+  } catch (error) {
+    console.error('❌ Save heartbeat config error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message 
+    });
+  }
+});
+
+// Get heartbeat status
+app.get('/api/system/heartbeat/status', (req, res) => {
+  try {
+    const status = systemHeartbeatService.getStatus();
+    res.json({ 
+      success: true, 
+      data: status 
+    });
+  } catch (error) {
+    console.error('❌ Get heartbeat status error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message 
+    });
+  }
+});
+
+// Start heartbeat manually
+app.post('/api/system/heartbeat/start', (req, res) => {
+  try {
+    const started = systemHeartbeatService.startHeartbeat();
+    
+    if (started) {
+      res.json({ 
+        success: true, 
+        message: 'Heartbeat started successfully' 
+      });
+    } else {
+      res.status(400).json({ 
+        success: false, 
+        error: 'Failed to start heartbeat. Check configuration.' 
+      });
+    }
+  } catch (error) {
+    console.error('❌ Start heartbeat error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message 
+    });
+  }
+});
+
+// Stop heartbeat manually
+app.post('/api/system/heartbeat/stop', (req, res) => {
+  try {
+    const stopped = systemHeartbeatService.stopHeartbeat();
+    
+    res.json({ 
+      success: true, 
+      message: stopped ? 'Heartbeat stopped successfully' : 'Heartbeat was not running' 
+    });
+  } catch (error) {
+    console.error('❌ Stop heartbeat error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message 
+    });
+  }
+});
+
+// Send test heartbeat immediately
+app.post('/api/system/heartbeat/test', async (req, res) => {
+  try {
+    console.log('💓 Test heartbeat requested');
+    const sent = await systemHeartbeatService.sendHeartbeat();
+    
+    if (sent) {
+      res.json({ 
+        success: true, 
+        message: 'Test heartbeat sent successfully' 
+      });
+    } else {
+      res.status(400).json({ 
+        success: false, 
+        error: 'Failed to send test heartbeat. Check email configuration.' 
+      });
+    }
+  } catch (error) {
+    console.error('❌ Test heartbeat error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message 
+    });
+  }
+});
 
 
 // Error handling middleware
@@ -2692,6 +2848,23 @@ setTimeout(() => {
     console.log('⚠️ Kubernetes not configured - monitoring not started');
   }
 }, 4000); // Wait 4 seconds for services to initialize
+
+
+setTimeout(() => {
+  const config = systemHeartbeatService.getConfig();
+  if (config.enabled) {
+    console.log('💓 Auto-starting system heartbeat service...');
+    const started = systemHeartbeatService.startHeartbeat();
+    if (started) {
+      console.log('✅ System heartbeat started automatically');
+    } else {
+      console.log('❌ Failed to auto-start system heartbeat');
+    }
+  } else {
+    console.log('💓 System heartbeat disabled in configuration');
+  }
+}, 6000);
+
 
 
 // Start server

@@ -13,7 +13,8 @@ import {
   CloudOutlined,
   GlobalOutlined,
   AlertOutlined,
-  CodeOutlined  
+  CodeOutlined,
+  HeartOutlined
 } from '@ant-design/icons';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
@@ -121,6 +122,11 @@ const Sidebar = ({ currentPage, onPageChange }) => {
         icon: <UserOutlined />,
         label: 'User Management',
       },      
+      {
+        key: 'system-heartbeat',
+        icon: <HeartOutlined />,
+        label: 'System Heartbeat',
+      },
       {
         key: 'kubernetes-config',
         icon: <SettingOutlined />,
