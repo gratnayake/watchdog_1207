@@ -259,12 +259,12 @@ async getWorkloadStatusWithInitialFilter() {
     // Get all pods first
     const allPods = await kubernetesService.getAllPods();
     
-    // Filter out unhealthy pods if this is initial startup
+    // Filter out pods with incomplete READY status if this is initial startup
     const isInitialStartup = this.workloadStatuses.size === 0;
     let filteredPods = allPods;
     
     if (isInitialStartup) {
-      console.log(`🔍 Initial startup detected - filtering unhealthy pods from snapshot`);
+      console.log(`🔍 Initial startup detected - filtering pods with incomplete READY status`);
       
       const originalCount = allPods.length;
       
@@ -275,34 +275,39 @@ async getWorkloadStatusWithInitialFilter() {
           return false;
         }
         
-        // EXCLUDE pods that are not fully ready
-        const isFullyReady = pod.ready && pod.status === 'Running';
+        // EXCLUDE pods where READY column is not complete (like 0/1, 1/2, etc.)
+        const isReadyComplete = this.isPodReadyComplete(pod);
         
-        if (!isFullyReady) {
-          console.log(`❌ Excluding unhealthy pod from initial snapshot: ${pod.namespace}/${pod.name} (Status: ${pod.status}, Ready: ${pod.ready})`);
+        if (!isReadyComplete) {
+          console.log(`❌ Excluding pod with incomplete READY status: ${pod.namespace}/${pod.name} (Ready: ${this.getPodReadyString(pod)}, Status: ${pod.status})`);
           return false;
         }
         
-        // INCLUDE healthy pods
-        console.log(`✅ Including healthy pod in initial snapshot: ${pod.namespace}/${pod.name}`);
+        // INCLUDE pods with complete READY status (1/1, 2/2, 3/3, etc.)
+        console.log(`✅ Including pod with complete READY status: ${pod.namespace}/${pod.name} (Ready: ${this.getPodReadyString(pod)})`);
         return true;
       });
       
       const excludedCount = originalCount - filteredPods.length;
-      console.log(`📊 Initial snapshot: ${filteredPods.length} healthy pods included, ${excludedCount} unhealthy pods excluded`);
-    } else {
-      // After initial startup, monitor all pods (but still exclude deleted ones)
-      filteredPods = allPods.filter(pod => {
-        if (pod.isDeleted) {
-          return false; // Always exclude deleted pods
-        }
-        return true;
-      });
+      console.log(`📊 Initial snapshot: ${filteredPods.length} pods with complete READY status included`);
+      console.log(`📊 Initial snapshot: ${excludedCount} pods with incomplete READY status excluded`);
       
-      console.log(`📊 Regular monitoring: tracking ${filteredPods.length} pods (${allPods.length - filteredPods.length} deleted pods excluded)`);
+      // Log excluded pods for clarity
+      const excludedPods = allPods.filter(pod => !filteredPods.includes(pod) && !pod.isDeleted);
+      if (excludedPods.length > 0) {
+        console.log(`🔍 Excluded pods:`);
+        excludedPods.forEach(pod => {
+          console.log(`   - ${pod.namespace}/${pod.name}: ${this.getPodReadyString(pod)} (${pod.status})`);
+        });
+      }
+      
+    } else {
+      // After initial startup, monitor all non-deleted pods
+      filteredPods = allPods.filter(pod => !pod.isDeleted);
+      console.log(`📊 Regular monitoring: tracking ${filteredPods.length} non-deleted pods`);
     }
     
-    // Group filtered pods by their owner (deployment/statefulset/etc)
+    // Group filtered pods by their owner workload
     const workloads = this.groupPodsByWorkload(filteredPods);
     
     return workloads;
@@ -310,6 +315,88 @@ async getWorkloadStatusWithInitialFilter() {
     console.error('Failed to get filtered workload status:', error);
     return [];
   }
+}
+
+getPodReadyString(pod) {
+  if (pod.readyContainers !== undefined && pod.totalContainers !== undefined) {
+    return `${pod.readyContainers}/${pod.totalContainers}`;
+  }
+  
+  if (pod.containerStatuses && Array.isArray(pod.containerStatuses)) {
+    const readyContainers = pod.containerStatuses.filter(c => c.ready === true).length;
+    const totalContainers = pod.containerStatuses.length;
+    return `${readyContainers}/${totalContainers}`;
+  }
+  
+  // Fallback: show ready status and pod status
+  return `${pod.ready ? 'Ready' : 'Not Ready'} (${pod.status})`;
+}
+
+isPodReadyComplete(pod) {
+  // Method 1: Check if pod.ready is true (most reliable)
+  if (pod.ready === true) {
+    return true;
+  }
+  
+  // Method 2: Parse ready containers vs total containers
+  if (pod.readyContainers !== undefined && pod.totalContainers !== undefined) {
+    return pod.readyContainers === pod.totalContainers && pod.totalContainers > 0;
+  }
+  
+  // Method 3: Parse from containerStatuses if available
+  if (pod.containerStatuses && Array.isArray(pod.containerStatuses)) {
+    const readyContainers = pod.containerStatuses.filter(c => c.ready === true).length;
+    const totalContainers = pod.containerStatuses.length;
+    return readyContainers === totalContainers && totalContainers > 0;
+  }
+  
+  // Method 4: Check status - exclude common incomplete states
+  const incompleteStatuses = [
+    'Pending', 
+    'ContainerCreating', 
+    'Init:0/1', 
+    'PodInitializing',
+    'Completed' // Jobs/Init containers that show as "Completed" with 0/1
+  ];
+  
+  if (incompleteStatuses.includes(pod.status)) {
+    return false;
+  }
+  
+  // Method 5: If status is Running, assume it's ready (fallback)
+  if (pod.status === 'Running') {
+    return true;
+  }
+  
+  // Default: exclude if we can't determine
+  return false;
+}
+
+logInitialFilteringSummary(allPods, filteredPods) {
+  console.log(`\n📋 INITIAL FILTERING SUMMARY:`);
+  console.log(`   Total pods found: ${allPods.length}`);
+  console.log(`   Pods with complete READY status: ${filteredPods.length}`);
+  console.log(`   Pods excluded: ${allPods.length - filteredPods.length}`);
+  
+  const excludedPods = allPods.filter(pod => !filteredPods.includes(pod) && !pod.isDeleted);
+  
+  if (excludedPods.length > 0) {
+    console.log(`\n❌ EXCLUDED PODS (Incomplete READY):`);
+    excludedPods.forEach(pod => {
+      console.log(`   ${pod.namespace}/${pod.name}: ${this.getPodReadyString(pod)} ${pod.status}`);
+    });
+  }
+  
+  console.log(`\n✅ INCLUDED PODS (Complete READY):`);
+  filteredPods.slice(0, 5).forEach(pod => {
+    console.log(`   ${pod.namespace}/${pod.name}: ${this.getPodReadyString(pod)} ${pod.status}`);
+  });
+  
+  if (filteredPods.length > 5) {
+    console.log(`   ... and ${filteredPods.length - 5} more pods`);
+  }
+  
+  console.log(`\n🎯 Monitoring will only track the ${filteredPods.length} pods with complete READY status\n`);
 }
 
 async handleInitialWorkloadDetection(workload, emailGroupId) {
@@ -562,7 +649,7 @@ async handleInitialWorkloadDetection(workload, emailGroupId) {
           <div style="background-color: ${failed.length > 0 ? 
             '#dc3545' : degraded.length > 0 ? '#ff7f00' : '#28a745'}; color: white; padding: 20px; text-align: center;">
             <h1 style="margin: 0; font-size: 24px;">☸️ KUBERNETES ALERT</h1>
-            <p style="margin: 8px 0 0 0; font-size: 16px;">${totalChanges} workload changes detected</p>
+            <p style="margin: 8px 0 0 0; font-size: 16px;">${totalChanges} pod changes detected</p>
           </div>
           
           <div style="background-color: #f8f9fa; padding: 20px;">
@@ -628,7 +715,7 @@ generateEnhancedAlertSection(title, alerts, color) {
       <table style="width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden;">
         <thead>
           <tr style="background-color: ${color}; color: white;">
-            <th style="padding: 12px; text-align: left;">Workload</th>
+            <th style="padding: 12px; text-align: left;">Pod</th>
             <th style="padding: 12px; text-align: left;">Namespace</th>
             <th style="padding: 12px; text-align: left;">Pods</th>
             <th style="padding: 12px; text-align: left;">Context</th>
