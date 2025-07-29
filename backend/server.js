@@ -2776,6 +2776,23 @@ app.post('/api/system/heartbeat/test', async (req, res) => {
   }
 });
 
+app.post('/api/kubernetes/pods/import', async (req, res) => {
+  try {
+    const { pods } = req.body;
+    console.log(`📥 Importing ${pods.length} pods into lifecycle tracking`);
+    
+    // Feed your pod data into the lifecycle service
+    const changes = await podLifecycleService.updatePodLifecycle(pods);
+    
+    res.json({
+      success: true,
+      message: `Imported ${pods.length} pods`,
+      changes: changes.length
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 
 // Error handling middleware
 app.use((err, req, res, next) => {
@@ -2795,7 +2812,44 @@ app.use((req, res) => {
   });
 });
 
-
+// Add this debug endpoint
+app.get('/api/kubernetes/pods/debug', async (req, res) => {
+  try {
+    const { namespace = 'all' } = req.query;
+    
+    // Get both data sources
+    const currentPods = await kubernetesService.getAllPodsWithContainers();
+    const comprehensivePods = podLifecycleService.getComprehensivePodList({
+      includeDeleted: true,
+      namespace: namespace === 'all' ? null : namespace,
+      sortBy: 'lastSeen'
+    });
+    
+    console.log(`🔍 Debug: ${currentPods.length} current pods, ${comprehensivePods.length} lifecycle pods`);
+    
+    res.json({
+      success: true,
+      debug: {
+        currentPodsCount: currentPods.length,
+        lifecyclePodsCount: comprehensivePods.length,
+        currentPodsSample: currentPods.slice(0, 2), // First 2 current pods
+        lifecyclePodsSample: comprehensivePods.slice(0, 2), // First 2 lifecycle pods
+        mergeIssues: comprehensivePods.map(lp => {
+          const match = currentPods.find(cp => cp.name === lp.name && cp.namespace === lp.namespace);
+          return {
+            name: lp.name,
+            namespace: lp.namespace,
+            hasMatch: !!match,
+            lifecycleReady: lp.readyContainers,
+            currentReady: match ? match.readyContainers : 'no-match'
+          };
+        }).slice(0, 5) // First 5 merge results
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 // Auto-start URL monitoring when server starts
 setTimeout(() => {
   console.log('🌐 Auto-starting URL monitoring...');
