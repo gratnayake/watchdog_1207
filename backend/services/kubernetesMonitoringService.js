@@ -222,10 +222,15 @@ class KubernetesMonitoringService {
       return;
     }
 
-    // Get current workload status with filtering
-    const currentWorkloads = await this.getWorkloadStatusWithInitialFilter();
-    
-    console.log(`✅ Retrieved ${currentWorkloads.length} workloads from cluster (unhealthy excluded from initial snapshot)`);
+    console.log(`📧 Email group configured: ${config.emailGroupId || 'None'}`);
+
+    // Get current pods directly (simpler approach)
+    const currentPods = await kubernetesService.getAllPods();
+    console.log(`✅ Retrieved ${currentPods.length} pods from cluster`);
+
+    // Group pods by workload for comparison
+    const currentWorkloads = this.groupPodsByWorkload(currentPods);
+    console.log(`📊 Grouped into ${currentWorkloads.length} workloads`);
 
     // Compare with previous state and detect changes
     for (const workload of currentWorkloads) {
@@ -238,19 +243,50 @@ class KubernetesMonitoringService {
         lastSeen: new Date()
       });
 
-      // Check for status changes
+      // Check for status changes (simplified logic)
       if (previousStatus) {
-        await this.detectWorkloadChanges(workload, previousStatus, config.emailGroupId);
+        await this.checkWorkloadHealth(workload, previousStatus, config.emailGroupId);
       } else {
-        console.log(`🆕 New healthy workload detected: ${workloadKey} (${workload.readyReplicas}/${workload.desiredReplicas})`);
+        console.log(`🆕 New workload detected: ${workloadKey} (${workload.readyReplicas}/${workload.desiredReplicas})`);
       }
     }
 
     // Clean up old workload statuses
     this.cleanupDeletedWorkloads(currentWorkloads);
 
+    console.log(`✅ Workload health check completed - ${currentWorkloads.length} workloads checked`);
+
   } catch (error) {
     console.error('❌ Workload health check failed:', error);
+  }
+}
+
+async checkWorkloadHealth(current, previous, emailGroupId) {
+  const workloadKey = `${current.type}/${current.name}/${current.namespace}`;
+  
+  console.log(`🔍 Checking ${workloadKey}: ${current.readyReplicas}/${current.desiredReplicas} ready`);
+
+  // Simple failure detection
+  const currentReady = current.readyReplicas || 0;
+  const currentDesired = current.desiredReplicas || 0;
+  const previousReady = previous.readyReplicas || 0;
+
+  // WORKLOAD FAILED: All pods are down when there should be some
+  if (currentReady === 0 && currentDesired > 0 && previousReady > 0) {
+    console.log(`💥 WORKLOAD FAILED: ${workloadKey}`);
+    this.addToBatchAlert('failed', current, emailGroupId);
+  }
+  
+  // WORKLOAD DEGRADED: Some pods are down
+  else if (currentReady > 0 && currentReady < currentDesired && currentReady < previousReady) {
+    console.log(`🚨 WORKLOAD DEGRADED: ${workloadKey} (${currentReady}/${currentDesired} ready)`);
+    this.addToBatchAlert('degraded', current, emailGroupId);
+  }
+  
+  // WORKLOAD RECOVERED: Back to full capacity
+  else if (currentReady === currentDesired && currentReady > previousReady && currentDesired > 0) {
+    console.log(`✅ WORKLOAD RECOVERED: ${workloadKey}`);
+    this.addToBatchAlert('recovered', current, emailGroupId);
   }
 }
 
