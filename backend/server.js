@@ -2105,7 +2105,6 @@ app.get('/api/kubernetes/pods/enhanced', async (req, res) => {
     
     console.log(`🔍 Enhanced pods request: namespace=${namespace}`);
     
-    // Get current pods from Kubernetes with container details
     let currentPods = [];
     try {
       if (namespace === 'all') {
@@ -2114,13 +2113,8 @@ app.get('/api/kubernetes/pods/enhanced', async (req, res) => {
         currentPods = await kubernetesService.getPods(namespace);
       }
       
-      // APPLY FILTERING HERE - Remove pods with incomplete READY status
       const filteredCurrentPods = currentPods.filter(pod => {
-        // Always exclude deleted pods
-        if (pod.isDeleted) {
-          return false;
-        }
-        
+               
         // Check if pod's READY status is complete
         const isReadyComplete = isPodReadyComplete(pod);
         
