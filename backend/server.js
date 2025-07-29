@@ -2099,12 +2099,11 @@ app.get('/api/kubernetes/pods/enhanced', async (req, res) => {
   try {
     const { 
       namespace = 'default', 
-      includeDeleted = 'true',
       maxAge,
       sortBy = 'lastSeen'
     } = req.query;
     
-    console.log(`🔍 Enhanced pods request: namespace=${namespace}, includeDeleted=${includeDeleted}`);
+    console.log(`🔍 Enhanced pods request: namespace=${namespace}`);
     
     // Get current pods from Kubernetes with container details
     let currentPods = [];
@@ -2145,16 +2144,13 @@ app.get('/api/kubernetes/pods/enhanced', async (req, res) => {
     
     // Get comprehensive pod list including historical data
     let comprehensivePods = podLifecycleService.getComprehensivePodList({
-      includeDeleted: includeDeleted === 'true',
       namespace: namespace === 'all' ? null : namespace,
       maxAge: maxAge ? parseInt(maxAge) : null,
       sortBy
     });
     
-    // ALSO FILTER the comprehensive pod list to exclude incomplete pods
     comprehensivePods = comprehensivePods.filter(pod => {
-      // Always show deleted pods if includeDeleted is true (for historical tracking)
-      if (pod.isDeleted && includeDeleted === 'true') {
+      if (pod.isDeleted ) {
         return true;
       }
       
@@ -2385,8 +2381,7 @@ app.get('/api/kubernetes/pods/:namespace/:podName/history', async (req, res) => 
   try {
     const { namespace, podName } = req.params;
     
-    const pods = podLifecycleService.getComprehensivePodList({
-      includeDeleted: true,
+    const pods = podLifecycleService.getComprehensivePodList({      
       namespace
     });
     
@@ -2434,7 +2429,6 @@ app.get('/api/kubernetes/pods/statistics', async (req, res) => {
     
     // Add time-based statistics
     const pods = podLifecycleService.getComprehensivePodList({
-      includeDeleted: true,
       namespace: namespace === 'all' ? null : namespace,
       maxAge: parseInt(timeRange)
     });

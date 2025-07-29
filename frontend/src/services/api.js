@@ -346,14 +346,12 @@ restartPod: async (namespace, podName) => {
   getEnhancedPods: async (options = {}) => {
     const {
       namespace = 'all',
-      includeDeleted = true,
       sortBy = 'lastSeen',
       maxAge
     } = options;
 
     const params = new URLSearchParams({
       namespace,
-      includeDeleted: includeDeleted.toString(),
       sortBy
     });
 

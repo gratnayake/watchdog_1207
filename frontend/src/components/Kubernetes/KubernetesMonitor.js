@@ -55,7 +55,6 @@ const EnhancedKubernetesMonitor = () => {
   const [statistics, setStatistics] = useState(null);
   const [loading, setLoading] = useState(false);
   const [selectedNamespace, setSelectedNamespace] = useState('all');
-  const [includeDeleted, setIncludeDeleted] = useState(true);
   const [sortBy, setSortBy] = useState('lastSeen');
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [historyModal, setHistoryModal] = useState({ visible: false, pod: null });
@@ -73,7 +72,7 @@ const EnhancedKubernetesMonitor = () => {
 
   useEffect(() => {
     loadEnhancedPods();
-  }, [selectedNamespace, includeDeleted, sortBy]);
+  }, [selectedNamespace, sortBy]);
 
   useEffect(() => {
     let interval;
@@ -85,7 +84,7 @@ const EnhancedKubernetesMonitor = () => {
     return () => {
       if (interval) clearInterval(interval);
     };
-  }, [autoRefresh, selectedNamespace, includeDeleted, sortBy]);
+  }, [autoRefresh, selectedNamespace, sortBy]);
 
   const loadInitialData = async () => {
     try {
@@ -105,7 +104,7 @@ const EnhancedKubernetesMonitor = () => {
   const loadEnhancedPods = async () => {
     try {
       setLoading(true);
-      const response = await fetch(`/api/kubernetes/pods/enhanced?namespace=${selectedNamespace}&includeDeleted=${includeDeleted}&sortBy=${sortBy}`);
+      const response = await fetch(`/api/kubernetes/pods/enhanced?namespace=${selectedNamespace}&sortBy=${sortBy}`);
       const data = await response.json();
       
       if (data.success) {
@@ -751,17 +750,6 @@ const handleStopDeployment = async (pod) => {
         </Button>
       </Space>
     </Col>
-          <Col xs={24} md={4}>
-            <Space>
-              <Text>Include Deleted:</Text>
-              <Switch
-                checked={includeDeleted}
-                onChange={setIncludeDeleted}
-                size="small"
-              />
-            </Space>
-          </Col>
-
           <Col xs={24} md={4}>
             <Space>
               <Text>Sort by:</Text>
