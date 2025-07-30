@@ -1,4 +1,4 @@
-// Replace your DatabaseConfig.js with this enhanced version
+// Enhanced DatabaseConfig.js with threshold settings - COMPLETE VERSION
 
 import React, { useState, useEffect } from 'react';
 import { 
@@ -8,36 +8,40 @@ import {
   Button, 
   Space, 
   Alert, 
-  Row, 
-  Col, 
+  Select, 
   Typography,
   message,
   Divider,
   InputNumber,
-  Select,
-  Spin
+  Switch,
+  Row,
+  Col,
+  Tooltip
 } from 'antd';
 import { 
   DatabaseOutlined, 
   SaveOutlined, 
-  CheckCircleOutlined,
-  EyeOutlined,
-  EyeInvisibleOutlined,
-  MailOutlined,
-  TeamOutlined
+  TestTubeOutlined,
+  BellOutlined,
+  ExclamationCircleOutlined,
+  WarningOutlined,
+  LockOutlined,
+  UserOutlined,
+  GlobalOutlined
 } from '@ant-design/icons';
 import { databaseAPI, emailAPI } from '../../services/api';
 
-const { Title, Text } = Typography;
+const { Text } = Typography;
 const { Option } = Select;
+const { Password } = Input;
 
 const DatabaseConfig = () => {
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
   const [testLoading, setTestLoading] = useState(false);
-  const [config, setConfig] = useState(null);
-  const [emailGroups, setEmailGroups] = useState([]);
+  const [config, setConfig] = useState({});
   const [alert, setAlert] = useState({ type: '', message: '', visible: false });
+  const [emailGroups, setEmailGroups] = useState([]);
 
   useEffect(() => {
     loadConfig();
@@ -46,26 +50,33 @@ const DatabaseConfig = () => {
 
   const loadConfig = async () => {
     try {
-      setLoading(true);
       const response = await databaseAPI.getConfig();
-      
       if (response.success) {
         setConfig(response.config);
-        // Set form values INCLUDING emailGroupId
         form.setFieldsValue({
           host: response.config.host,
           port: response.config.port,
           serviceName: response.config.serviceName,
           username: response.config.username,
-          password: '', // Don't show existing password
-          emailGroupId: response.config.emailGroupId || null // Add this field
+          password: response.config.password,
+          emailGroupId: response.config.emailGroupId,
+          // Threshold settings
+          monitoringEnabled: response.config.thresholds?.monitoringEnabled ?? true,
+          connectionTimeoutSeconds: response.config.thresholds?.connectionTimeoutSeconds ?? 30,
+          checkIntervalMinutes: response.config.thresholds?.checkIntervalMinutes ?? 1,
+          alertCooldownMinutes: response.config.thresholds?.alertCooldownMinutes ?? 15,
+          retryAttempts: response.config.thresholds?.retryAttempts ?? 3,
+          minDatabaseSizeGB: response.config.thresholds?.minDatabaseSizeGB ?? 5,
+          maxTablespaceUsagePercent: response.config.thresholds?.maxTablespaceUsagePercent ?? 90,
+          alertOnConnectionLoss: response.config.thresholds?.alertOnConnectionLoss ?? true,
+          alertOnSizeThreshold: response.config.thresholds?.alertOnSizeThreshold ?? true,
+          alertOnTablespaceUsage: response.config.thresholds?.alertOnTablespaceUsage ?? true,
+          alertOnSlowQueries: response.config.thresholds?.alertOnSlowQueries ?? false,
+          slowQueryThresholdSeconds: response.config.thresholds?.slowQueryThresholdSeconds ?? 10
         });
       }
     } catch (error) {
       console.error('Failed to load database config:', error);
-      showAlert('error', 'Failed to load database configuration');
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -73,7 +84,7 @@ const DatabaseConfig = () => {
     try {
       const response = await emailAPI.getEmailGroups();
       if (response.success) {
-        setEmailGroups(response.data || []);
+        setEmailGroups(response.data.filter(group => group.enabled));
       }
     } catch (error) {
       console.error('Failed to load email groups:', error);
@@ -87,57 +98,44 @@ const DatabaseConfig = () => {
     }, 5000);
   };
 
-  const handleTestConnection = async () => {
-    try {
-      const values = await form.validateFields(['host', 'port', 'serviceName', 'username', 'password']);
-      setTestLoading(true);
-      
-      console.log('Testing connection with:', { ...values, password: '***' });
-      
-      const response = await databaseAPI.testConnection(values);
-      
-      if (response.success) {
-        showAlert('success', 'Connection test successful! Database is reachable.');
-        message.success('Connection test successful!');
-      } else {
-        showAlert('error', `Connection test failed: ${response.error}`);
-        message.error('Connection test failed');
-      }
-    } catch (error) {
-      if (error.errorFields) {
-        message.error('Please fill in all required fields');
-        return;
-      }
-      
-      console.error('Test connection error:', error);
-      const errorMessage = error.response?.data?.error || error.message;
-      showAlert('error', `Connection test failed: ${errorMessage}`);
-      message.error('Connection test failed');
-    } finally {
-      setTestLoading(false);
-    }
-  };
-
   const handleSave = async () => {
     try {
       const values = await form.validateFields();
       setLoading(true);
       
-      console.log('Saving config with email group:', { ...values, password: '***' });
+      // Prepare config data with thresholds
+      const configData = {
+        host: values.host,
+        port: values.port,
+        serviceName: values.serviceName,
+        username: values.username,
+        password: values.password,
+        emailGroupId: values.emailGroupId,
+        thresholds: {
+          monitoringEnabled: values.monitoringEnabled,
+          connectionTimeoutSeconds: values.connectionTimeoutSeconds,
+          checkIntervalMinutes: values.checkIntervalMinutes,
+          alertCooldownMinutes: values.alertCooldownMinutes,
+          retryAttempts: values.retryAttempts,
+          minDatabaseSizeGB: values.minDatabaseSizeGB,
+          maxTablespaceUsagePercent: values.maxTablespaceUsagePercent,
+          alertOnConnectionLoss: values.alertOnConnectionLoss,
+          alertOnSizeThreshold: values.alertOnSizeThreshold,
+          alertOnTablespaceUsage: values.alertOnTablespaceUsage,
+          alertOnSlowQueries: values.alertOnSlowQueries,
+          slowQueryThresholdSeconds: values.slowQueryThresholdSeconds
+        }
+      };
       
-      const response = await databaseAPI.saveConfig(values);
+      const response = await databaseAPI.saveConfig(configData);
       
       if (response.success) {
         setConfig(response.config);
-        showAlert('success', 'Database configuration saved successfully with email group!');
-        message.success('Configuration saved to JSON file!');
-        
-        // Reload config to get updated data
-        setTimeout(() => {
-          loadConfig();
-        }, 1000);
+        showAlert('success', 'Database configuration and thresholds saved successfully!');
+        message.success('Configuration saved!');
+        setTimeout(() => loadConfig(), 1000);
       } else {
-        showAlert('error', 'Failed to save configuration');
+        showAlert('error', response.error || 'Failed to save configuration');
       }
     } catch (error) {
       if (error.errorFields) {
@@ -145,251 +143,486 @@ const DatabaseConfig = () => {
         return;
       }
       
-      console.error('Save config error:', error);
-      const errorMessage = error.response?.data?.error || error.message;
-      showAlert('error', `Failed to save configuration: ${errorMessage}`);
+      console.error('Save database config error:', error);
+      showAlert('error', `Failed to save configuration: ${error.message}`);
     } finally {
       setLoading(false);
     }
   };
 
-  if (loading && !config) {
-    return (
-      <div style={{ textAlign: 'center', padding: '50px' }}>
-        <Spin size="large" />
-        <p style={{ marginTop: 16 }}>Loading database configuration...</p>
-      </div>
-    );
-  }
+  const handleTestConnection = async () => {
+    try {
+      const values = await form.validateFields(['host', 'port', 'serviceName', 'username', 'password']);
+      setTestLoading(true);
+      
+      const response = await databaseAPI.testConnection(values);
+      
+      if (response.success) {
+        showAlert('success', 'Database connection test successful!');
+        message.success('Connection test successful!');
+      } else {
+        showAlert('error', response.error || 'Connection test failed');
+      }
+    } catch (error) {
+      if (error.errorFields) {
+        message.error('Please fill in all connection fields');
+        return;
+      }
+      
+      console.error('Test database connection error:', error);
+      showAlert('error', 'Connection test failed: ' + error.message);
+    } finally {
+      setTestLoading(false);
+    }
+  };
 
   return (
-    <div>
-      <Row gutter={[24, 24]}>
-        <Col xs={24} lg={16}>
-          <Card
-            title={
-              <Space>
-                <DatabaseOutlined />
-                Oracle Database Configuration
-              </Space>
-            }
+    <Row gutter={[24, 24]}>
+      <Col xs={24} lg={16}>
+        <Card
+          title={
+            <Space>
+              <DatabaseOutlined />
+              Database Configuration
+            </Space>
+          }
+          loading={loading}
+        >
+          {alert.visible && (
+            <Alert
+              message={alert.message}
+              type={alert.type}
+              style={{ marginBottom: 16 }}
+              closable
+              onClose={() => setAlert({ ...alert, visible: false })}
+            />
+          )}
+
+          <Form
+            form={form}
+            layout="vertical"
           >
-            {alert.visible && (
-              <Alert
-                message={alert.message}
-                type={alert.type}
-                style={{ marginBottom: 16 }}
-                closable
-                onClose={() => setAlert({ ...alert, visible: false })}
-              />
-            )}
+            <Divider orientation="left">Database Connection</Divider>
 
-            <Form
-              form={form}
-              layout="vertical"
-              initialValues={{
-                port: 1521
-              }}
-            >
-              <Row gutter={16}>
-                <Col span={16}>
-                  <Form.Item
-                    name="host"
-                    label="Database Host"
-                    rules={[{ required: true, message: 'Please enter database host!' }]}
-                  >
-                    <Input 
-                      placeholder="Database server hostname or IP address"
-                      size="large"
-                    />
-                  </Form.Item>
-                </Col>
-                <Col span={8}>
-                  <Form.Item
-                    name="port"
-                    label="Port"
-                    rules={[{ required: true, message: 'Please enter port!' }]}
-                  >
-                    <InputNumber 
-                      placeholder="1521"
-                      min={1}
-                      max={65535}
-                      size="large"
-                      style={{ width: '100%' }}
-                    />
-                  </Form.Item>
-                </Col>
-              </Row>
-
-              <Form.Item
-                name="serviceName"
-                label="Service Name"
-                rules={[{ required: true, message: 'Please enter service name!' }]}
-              >
-                <Input 
-                  placeholder="Oracle service name (e.g., ORCL, XE, XEPDB1)"
-                  size="large"
-                />
-              </Form.Item>
-
-              <Form.Item
-                name="username"
-                label="Database Username"
-                rules={[{ required: true, message: 'Please enter username!' }]}
-              >
-                <Input 
-                  placeholder="Database username (e.g., system, hr, scott)"
-                  size="large"
-                />
-              </Form.Item>
-
-              <Form.Item
-                name="password"
-                label="Database Password"
-                rules={[{ required: true, message: 'Please enter password!' }]}
-              >
-                <Input.Password 
-                  placeholder="Database password"
-                  size="large"
-                  iconRender={visible => (visible ? <EyeOutlined /> : <EyeInvisibleOutlined />)}
-                />
-              </Form.Item>
-
-              <Divider orientation="left">Alert Configuration</Divider>
-
-              <Form.Item
-                name="emailGroupId"
-                label="Database Alert Group"
-                extra="Select which email group should receive database alerts (up/down notifications)"
-              >
-                <Select 
-                  placeholder="Select email group for database alerts (optional)"
-                  allowClear
-                  size="large"
-                  loading={emailGroups.length === 0}
+            <Row gutter={16}>
+              <Col xs={24} md={12}>
+                <Form.Item
+                  name="host"
+                  label="Database Host"
+                  rules={[{ required: true, message: 'Host is required!' }]}
                 >
-                  <Option value={null}>
-                    <Space>
-                      🔕 
-                      <span>No email alerts</span>
-                    </Space>
-                  </Option>
-                  {emailGroups.map(group => (
-                    <Option key={group.id} value={group.id}>
-                      <Space>
-                        <TeamOutlined />
-                        <span>{group.name}</span>
-                        <span style={{ color: '#8c8c8c' }}>
-                          ({group.emails.length} recipients)
-                        </span>
-                      </Space>
-                    </Option>
-                  ))}
-                </Select>
-              </Form.Item>
+                  <Input 
+                    placeholder="e.g., localhost or 192.168.1.100"
+                    prefix={<GlobalOutlined />}
+                  />
+                </Form.Item>
+              </Col>
+              <Col xs={24} md={12}>
+                <Form.Item
+                  name="port"
+                  label="Port"
+                  rules={[{ required: true, message: 'Port is required!' }]}
+                >
+                  <InputNumber
+                    min={1}
+                    max={65535}
+                    style={{ width: '100%' }}
+                    placeholder="e.g., 1521"
+                  />
+                </Form.Item>
+              </Col>
+            </Row>
 
-              {emailGroups.length === 0 && (
-                <Alert
-                  message="No Email Groups Available"
-                  description="Create email groups in Email Management to enable database alerts."
-                  type="info"
-                  showIcon
-                  style={{ marginBottom: 16 }}
-                />
-              )}
-
-              <Form.Item style={{ marginBottom: 0, marginTop: 24 }}>
-                <Space size="large">
-                  <Button 
-                    type="default"
-                    icon={<CheckCircleOutlined />}
-                    onClick={handleTestConnection}
-                    loading={testLoading}
-                    size="large"
-                  >
-                    Test Connection
-                  </Button>
-                  <Button 
-                    type="primary"
-                    icon={<SaveOutlined />}
-                    onClick={handleSave}
-                    loading={loading}
-                    size="large"
-                  >
-                    Save Configuration
-                  </Button>
-                </Space>
-              </Form.Item>
-            </Form>
-          </Card>
-        </Col>
-
-        <Col xs={24} lg={8}>
-          <Card title="Configuration Status">
-            {config ? (
-              <div>
-                <Alert
-                  message={config.isConfigured ? "✅ Database Configured" : "⚠️ Database Not Configured"}
-                  type={config.isConfigured ? "success" : "warning"}
-                  style={{ marginBottom: 16 }}
-                />
-                
-                {config.isConfigured && (
-                  <div>
-                    <Title level={5}>Current Settings:</Title>
-                    <p><strong>Host:</strong> {config.host}</p>
-                    <p><strong>Port:</strong> {config.port}</p>
-                    <p><strong>Service:</strong> {config.serviceName}</p>
-                    <p><strong>Username:</strong> {config.username}</p>
-                    
-                    {config.emailGroupId && (
-                      <div>
-                        <p><strong>Alert Group:</strong> 
-                          {emailGroups.find(g => g.id === config.emailGroupId)?.name || 'Unknown Group'}
-                        </p>
-                      </div>
-                    )}
-                    
-                    {!config.emailGroupId && (
-                      <Alert
-                        message="No Email Alerts"
-                        description="Select an email group to receive database alerts"
-                        type="info"
-                        size="small"
-                      />
-                    )}
-                  </div>
-                )}
-              </div>
-            ) : (
-              <Alert
-                message="No Configuration Found"
-                description="Please configure your Oracle database connection"
-                type="info"
+            <Form.Item
+              name="serviceName"
+              label="Service Name / Database"
+              rules={[{ required: true, message: 'Service name is required!' }]}
+            >
+              <Input 
+                placeholder="e.g., ORCL or your database name"
+                prefix={<DatabaseOutlined />}
               />
-            )}
-          </Card>
+            </Form.Item>
 
-          <Card title="Connection Tips" style={{ marginTop: 16 }}>
-            <div>
-              <Title level={5}>Common Service Names:</Title>
-              <ul>
-                <li><strong>XE:</strong> Oracle Express Edition</li>
-                <li><strong>ORCL:</strong> Standard Oracle instance</li>
-                <li><strong>XEPDB1:</strong> Pluggable database in XE</li>
-                <li><strong>PDB1:</strong> Common pluggable database name</li>
-              </ul>
+            <Row gutter={16}>
+              <Col xs={24} md={12}>
+                <Form.Item
+                  name="username"
+                  label="Username"
+                  rules={[{ required: true, message: 'Username is required!' }]}
+                >
+                  <Input 
+                    placeholder="Database username"
+                    prefix={<UserOutlined />}
+                  />
+                </Form.Item>
+              </Col>
+              <Col xs={24} md={12}>
+                <Form.Item
+                  name="password"
+                  label="Password"
+                  rules={[{ required: true, message: 'Password is required!' }]}
+                >
+                  <Password 
+                    placeholder="Database password"
+                    prefix={<LockOutlined />}
+                  />
+                </Form.Item>
+              </Col>
+            </Row>
+
+            <Form.Item
+              name="emailGroupId"
+              label="Alert Email Group"
+            >
+              <Select 
+                placeholder="Select email group for database alerts"
+                allowClear
+              >
+                {emailGroups.map(group => (
+                  <Option key={group.id} value={group.id}>
+                    {group.name} ({group.emails.length} recipients)
+                  </Option>
+                ))}
+              </Select>
+            </Form.Item>
+
+            <Divider orientation="left">
+              <Space>
+                <BellOutlined />
+                Monitoring Thresholds
+              </Space>
+            </Divider>
+
+            <Form.Item
+              name="monitoringEnabled"
+              valuePropName="checked"
+            >
+              <Switch 
+                checkedChildren="Enabled" 
+                unCheckedChildren="Disabled"
+              />
+              <Text style={{ marginLeft: 8 }}>Enable database monitoring and alerts</Text>
+            </Form.Item>
+
+            <Row gutter={16}>
+              <Col xs={24} md={12}>
+                <Form.Item
+                  name="connectionTimeoutSeconds"
+                  label={
+                    <Space>
+                      <Text>Connection Timeout (seconds)</Text>
+                      <Tooltip title="How long to wait for database connection before marking as failed">
+                        <ExclamationCircleOutlined style={{ color: '#1890ff' }} />
+                      </Tooltip>
+                    </Space>
+                  }
+                  rules={[{ required: true, message: 'Required!' }]}
+                >
+                  <InputNumber
+                    min={5}
+                    max={300}
+                    style={{ width: '100%' }}
+                    placeholder="e.g., 30"
+                  />
+                </Form.Item>
+              </Col>
+              <Col xs={24} md={12}>
+                <Form.Item
+                  name="checkIntervalMinutes"
+                  label={
+                    <Space>
+                      <Text>Check Interval (minutes)</Text>
+                      <Tooltip title="How often to check database connectivity">
+                        <ExclamationCircleOutlined style={{ color: '#1890ff' }} />
+                      </Tooltip>
+                    </Space>
+                  }
+                  rules={[{ required: true, message: 'Required!' }]}
+                >
+                  <InputNumber
+                    min={1}
+                    max={60}
+                    style={{ width: '100%' }}
+                    placeholder="e.g., 1"
+                  />
+                </Form.Item>
+              </Col>
+            </Row>
+
+            <Row gutter={16}>
+              <Col xs={24} md={12}>
+                <Form.Item
+                  name="retryAttempts"
+                  label={
+                    <Space>
+                      <Text>Retry Attempts</Text>
+                      <Tooltip title="Number of connection retries before alerting">
+                        <ExclamationCircleOutlined style={{ color: '#1890ff' }} />
+                      </Tooltip>
+                    </Space>
+                  }
+                  rules={[{ required: true, message: 'Required!' }]}
+                >
+                  <InputNumber
+                    min={1}
+                    max={10}
+                    style={{ width: '100%' }}
+                    placeholder="e.g., 3"
+                  />
+                </Form.Item>
+              </Col>
+              <Col xs={24} md={12}>
+                <Form.Item
+                  name="alertCooldownMinutes"
+                  label={
+                    <Space>
+                      <Text>Alert Cooldown (minutes)</Text>
+                      <Tooltip title="Minimum time between duplicate alerts">
+                        <ExclamationCircleOutlined style={{ color: '#1890ff' }} />
+                      </Tooltip>
+                    </Space>
+                  }
+                  rules={[{ required: true, message: 'Required!' }]}
+                >
+                  <InputNumber
+                    min={5}
+                    max={1440}
+                    style={{ width: '100%' }}
+                    placeholder="e.g., 15"
+                  />
+                </Form.Item>
+              </Col>
+            </Row>
+
+            <Row gutter={16}>
+              <Col xs={24} md={12}>
+                <Form.Item
+                  name="minDatabaseSizeGB"
+                  label={
+                    <Space>
+                      <Text>Min Database Size (GB)</Text>
+                      <Tooltip title="Alert when database size falls below this threshold">
+                        <ExclamationCircleOutlined style={{ color: '#1890ff' }} />
+                      </Tooltip>
+                    </Space>
+                  }
+                  rules={[{ required: true, message: 'Required!' }]}
+                >
+                  <InputNumber
+                    min={0.1}
+                    step={0.1}
+                    style={{ width: '100%' }}
+                    placeholder="e.g., 5.0"
+                  />
+                </Form.Item>
+              </Col>
+              <Col xs={24} md={12}>
+                <Form.Item
+                  name="maxTablespaceUsagePercent"
+                  label={
+                    <Space>
+                      <Text>Max Tablespace Usage (%)</Text>
+                      <Tooltip title="Alert when any tablespace exceeds this usage percentage">
+                        <ExclamationCircleOutlined style={{ color: '#1890ff' }} />
+                      </Tooltip>
+                    </Space>
+                  }
+                  rules={[{ required: true, message: 'Required!' }]}
+                >
+                  <InputNumber
+                    min={50}
+                    max={99}
+                    style={{ width: '100%' }}
+                    placeholder="e.g., 90"
+                  />
+                </Form.Item>
+              </Col>
+            </Row>
+
+            <Form.Item
+              name="slowQueryThresholdSeconds"
+              label={
+                <Space>
+                  <Text>Slow Query Threshold (seconds)</Text>
+                  <Tooltip title="Alert when queries take longer than this time">
+                    <ExclamationCircleOutlined style={{ color: '#1890ff' }} />
+                  </Tooltip>
+                </Space>
+              }
+              rules={[{ required: true, message: 'Required!' }]}
+            >
+              <InputNumber
+                min={1}
+                max={300}
+                style={{ width: '100%' }}
+                placeholder="e.g., 10"
+              />
+            </Form.Item>
+
+            <Divider orientation="left">Alert Types</Divider>
+
+            <Row gutter={16}>
+              <Col xs={24} md={12}>
+                <Form.Item
+                  name="alertOnConnectionLoss"
+                  valuePropName="checked"
+                >
+                  <Switch size="small" />
+                  <Text style={{ marginLeft: 8 }}>Connection Loss</Text>
+                </Form.Item>
+              </Col>
+              <Col xs={24} md={12}>
+                <Form.Item
+                  name="alertOnSizeThreshold"
+                  valuePropName="checked"
+                >
+                  <Switch size="small" />
+                  <Text style={{ marginLeft: 8 }}>Size Threshold</Text>
+                </Form.Item>
+              </Col>
+            </Row>
+
+            <Row gutter={16}>
+              <Col xs={24} md={12}>
+                <Form.Item
+                  name="alertOnTablespaceUsage"
+                  valuePropName="checked"
+                >
+                  <Switch size="small" />
+                  <Text style={{ marginLeft: 8 }}>Tablespace Usage</Text>
+                </Form.Item>
+              </Col>
+              <Col xs={24} md={12}>
+                <Form.Item
+                  name="alertOnSlowQueries"
+                  valuePropName="checked"
+                >
+                  <Switch size="small" />
+                  <Text style={{ marginLeft: 8 }}>Slow Queries</Text>
+                </Form.Item>
+              </Col>
+            </Row>
+
+            <Divider />
+
+            <Space>
+              <Button 
+                type="primary" 
+                icon={<SaveOutlined />}
+                onClick={handleSave}
+                loading={loading}
+              >
+                Save Configuration
+              </Button>
               
-              <Title level={5}>Default Ports:</Title>
-              <ul>
-                <li><strong>1521:</strong> Standard Oracle port</li>
-                <li><strong>1522:</strong> Alternative Oracle port</li>
-              </ul>
+              <Button 
+                icon={<TestTubeOutlined />}
+                onClick={handleTestConnection}
+                loading={testLoading}
+              >
+                Test Connection
+              </Button>
+            </Space>
+          </Form>
+        </Card>
+      </Col>
+
+      <Col xs={24} lg={8}>
+        <Card
+          title={
+            <Space>
+              <WarningOutlined />
+              Threshold Guide
+            </Space>
+          }
+        >
+          <Space direction="vertical" style={{ width: '100%' }} size="middle">
+            <div>
+              <Text strong>Connection Timeout</Text>
+              <br />
+              <Text type="secondary" style={{ fontSize: '12px' }}>
+                How long to wait for DB response. Recommended: 30 seconds for local, 60+ for remote databases.
+              </Text>
             </div>
+
+            <div>
+              <Text strong>Check Interval</Text>
+              <br />
+              <Text type="secondary" style={{ fontSize: '12px' }}>
+                How often to ping the database. Recommended: 1-2 minutes for critical systems.
+              </Text>
+            </div>
+
+            <div>
+              <Text strong>Retry Attempts</Text>
+              <br />
+              <Text type="secondary" style={{ fontSize: '12px' }}>
+                Number of retries before alerting. Recommended: 3 attempts to avoid false positives.
+              </Text>
+            </div>
+
+            <div>
+              <Text strong>Database Size</Text>
+              <br />
+              <Text type="secondary" style={{ fontSize: '12px' }}>
+                Alert when database shrinks unexpectedly. Set based on your normal database size.
+              </Text>
+            </div>
+
+            <div>
+              <Text strong>Tablespace Usage</Text>
+              <br />
+              <Text type="secondary" style={{ fontSize: '12px' }}>
+                Alert when tablespaces get full. Recommended: 85-90% to allow time for action.
+              </Text>
+            </div>
+
+            <div>
+              <Text strong>Alert Cooldown</Text>
+              <br />
+              <Text type="secondary" style={{ fontSize: '12px' }}>
+                Prevents alert spam. Recommended: 15-30 minutes for most database issues.
+              </Text>
+            </div>
+          </Space>
+        </Card>
+
+        {config.isConfigured && (
+          <Card
+            title="Current Status"
+            style={{ marginTop: 16 }}
+          >
+            <Space direction="vertical" style={{ width: '100%' }}>
+              <div>
+                <Text strong>Connection: </Text>
+                <Text type="success">Configured</Text>
+              </div>
+              <div>
+                <Text strong>Monitoring: </Text>
+                <Text type={config.thresholds?.monitoringEnabled ? "success" : "warning"}>
+                  {config.thresholds?.monitoringEnabled ? "Enabled" : "Disabled"}
+                </Text>
+              </div>
+              <div>
+                <Text strong>Email Alerts: </Text>
+                <Text type={config.emailGroupId ? "success" : "warning"}>
+                  {config.emailGroupId ? "Configured" : "Not Set"}
+                </Text>
+              </div>
+              <div>
+                <Text strong>Check Interval: </Text>
+                <Text>{config.thresholds?.checkIntervalMinutes || 1} minute(s)</Text>
+              </div>
+              <div>
+                <Text strong>Size Threshold: </Text>
+                <Text>{config.thresholds?.minDatabaseSizeGB || 5} GB</Text>
+              </div>
+            </Space>
           </Card>
-        </Col>
-      </Row>
-    </div>
+        )}
+      </Col>
+    </Row>
   );
 };
 

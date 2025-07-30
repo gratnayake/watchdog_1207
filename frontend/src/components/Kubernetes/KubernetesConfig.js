@@ -1,5 +1,4 @@
-// frontend/src/components/Kubernetes/KubernetesConfig.js
-// Complete version with email groups added to existing functionality
+// Enhanced KubernetesConfig.js with threshold settings
 
 import React, { useState, useEffect } from 'react';
 import { 
@@ -9,34 +8,39 @@ import {
   Button, 
   Space, 
   Alert, 
-  Row, 
-  Col, 
+  Select, 
   Typography,
   message,
   Divider,
-  Select
+  InputNumber,
+  Switch,
+  Row,
+  Col,
+  Tooltip
 } from 'antd';
 import { 
-  CloudOutlined, 
-  SaveOutlined, 
-  CheckCircleOutlined,
-  FolderOpenOutlined,
-  SettingOutlined,
-  TeamOutlined
+  SettingOutlined, 
+  FolderOpenOutlined, 
+  TestTubeOutlined,
+  SaveOutlined,
+  ClearOutlined,
+  ExclamationCircleOutlined,
+  WarningOutlined,
+  BellOutlined
 } from '@ant-design/icons';
 import { kubernetesAPI, emailAPI } from '../../services/api';
 import { useMode } from '../../contexts/ModeContext';
 
-const { Title, Text } = Typography;
+const { Text } = Typography;
 const { Option } = Select;
 
 const KubernetesConfig = () => {
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
   const [testLoading, setTestLoading] = useState(false);
-  const [config, setConfig] = useState(null);
-  const [emailGroups, setEmailGroups] = useState([]);
+  const [config, setConfig] = useState({});
   const [alert, setAlert] = useState({ type: '', message: '', visible: false });
+  const [emailGroups, setEmailGroups] = useState([]);
   const { refreshMode } = useMode();
 
   useEffect(() => {
@@ -46,38 +50,37 @@ const KubernetesConfig = () => {
 
   const loadConfig = async () => {
     try {
-      setLoading(true);
       const response = await kubernetesAPI.getConfig();
-      
       if (response.success) {
         setConfig(response.config);
         form.setFieldsValue({
           kubeconfigPath: response.config.kubeconfigPath,
-          emailGroupId: response.config.emailGroupId
+          emailGroupId: response.config.emailGroupId,
+          // Threshold settings
+          monitoringEnabled: response.config.thresholds?.monitoringEnabled ?? true,
+          podFailureThreshold: response.config.thresholds?.podFailureThreshold ?? 3,
+          nodeDownThreshold: response.config.thresholds?.nodeDownThreshold ?? 1,
+          namespaceAlertThreshold: response.config.thresholds?.namespaceAlertThreshold ?? 5,
+          checkIntervalMinutes: response.config.thresholds?.checkIntervalMinutes ?? 2,
+          alertCooldownMinutes: response.config.thresholds?.alertCooldownMinutes ?? 30,
+          alertOnPodStops: response.config.thresholds?.alertOnPodStops ?? true,
+          alertOnPodFailures: response.config.thresholds?.alertOnPodFailures ?? true,
+          alertOnNodeIssues: response.config.thresholds?.alertOnNodeIssues ?? true
         });
       }
     } catch (error) {
-      console.error('Failed to load Kubernetes config:', error);
-      showAlert('error', 'Failed to load Kubernetes configuration');
-    } finally {
-      setLoading(false);
+      console.error('Failed to load config:', error);
     }
   };
 
   const loadEmailGroups = async () => {
     try {
-      console.log('🔍 Loading email groups using emailAPI...');
       const response = await emailAPI.getEmailGroups();
-      console.log('📡 EmailAPI response:', response);
-      
       if (response.success) {
-        console.log('✅ Email groups loaded:', response.data.length, 'groups');
-        setEmailGroups(response.data || []);
-      } else {
-        console.error('❌ EmailAPI returned error:', response.error);
+        setEmailGroups(response.data.filter(group => group.enabled));
       }
     } catch (error) {
-      console.error('❌ Failed to load email groups:', error);
+      console.error('Failed to load email groups:', error);
     }
   };
 
@@ -93,28 +96,37 @@ const KubernetesConfig = () => {
       const values = await form.validateFields();
       setLoading(true);
       
-      // Use the updated saveConfig method that includes emailGroupId
+      // Prepare config data with thresholds
+      const configData = {
+        kubeconfigPath: values.kubeconfigPath,
+        emailGroupId: values.emailGroupId,
+        thresholds: {
+          monitoringEnabled: values.monitoringEnabled,
+          podFailureThreshold: values.podFailureThreshold,
+          nodeDownThreshold: values.nodeDownThreshold,
+          namespaceAlertThreshold: values.namespaceAlertThreshold,
+          checkIntervalMinutes: values.checkIntervalMinutes,
+          alertCooldownMinutes: values.alertCooldownMinutes,
+          alertOnPodStops: values.alertOnPodStops,
+          alertOnPodFailures: values.alertOnPodFailures,
+          alertOnNodeIssues: values.alertOnNodeIssues
+        }
+      };
+      
       const response = await fetch('/api/kubernetes/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          kubeconfigPath: values.kubeconfigPath,
-          emailGroupId: values.emailGroupId
-        })
+        body: JSON.stringify(configData)
       });
 
       const data = await response.json();
       
       if (data.success) {
         setConfig(data.config);
-        showAlert('success', 'Kubernetes configuration saved successfully!');
+        showAlert('success', 'Kubernetes configuration and thresholds saved successfully!');
         message.success('Configuration saved!');
-        
         await refreshMode();
-
-        setTimeout(() => {
-          loadConfig();
-        }, 1000);
+        setTimeout(() => loadConfig(), 1000);
       } else {
         showAlert('error', data.error || 'Failed to save configuration');
       }
@@ -125,44 +137,7 @@ const KubernetesConfig = () => {
       }
       
       console.error('Save Kubernetes config error:', error);
-      const errorMessage = error.response?.data?.error || error.message;
-      showAlert('error', `Failed to save configuration: ${errorMessage}`);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleClearConfig = async () => {
-    try {
-      setLoading(true);
-      
-      console.log('🔍 Clearing config - sending empty kubeconfigPath');
-      
-      // Send empty config directly
-      const response = await fetch('/api/kubernetes/config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          kubeconfigPath: '',
-          emailGroupId: null
-        })
-      });
-
-      const data = await response.json();
-      
-      console.log('✅ Clear response:', data);
-      
-      if (data.success) {
-        setConfig({ kubeconfigPath: '', emailGroupId: null, isConfigured: false });
-        form.setFieldsValue({ kubeconfigPath: '', emailGroupId: null });
-        showAlert('success', 'Kubernetes configuration cleared successfully!');
-        message.success('Configuration cleared!');
-        await refreshMode();
-      }
-    } catch (error) {
-      console.error('❌ Clear config error:', error);
-      console.error('❌ Error response:', error.response?.data);
-      showAlert('error', 'Failed to clear configuration: ' + (error.response?.data?.error || error.message));
+      showAlert('error', `Failed to save configuration: ${error.message}`);
     } finally {
       setLoading(false);
     }
@@ -170,7 +145,7 @@ const KubernetesConfig = () => {
 
   const handleTestConfig = async () => {
     try {
-      const values = await form.validateFields(['kubeconfigPath']); // Only validate kubeconfig for testing
+      const values = await form.validateFields(['kubeconfigPath']);
       setTestLoading(true);
       
       const response = await kubernetesAPI.testConfig(values);
@@ -191,6 +166,37 @@ const KubernetesConfig = () => {
       showAlert('error', 'Connection test failed: ' + error.message);
     } finally {
       setTestLoading(false);
+    }
+  };
+
+  const handleClearConfig = async () => {
+    try {
+      setLoading(true);
+      
+      const response = await fetch('/api/kubernetes/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          kubeconfigPath: '',
+          emailGroupId: null,
+          thresholds: null
+        })
+      });
+
+      const data = await response.json();
+      
+      if (data.success) {
+        setConfig({ kubeconfigPath: '', emailGroupId: null, isConfigured: false });
+        form.resetFields();
+        showAlert('success', 'Kubernetes configuration cleared successfully!');
+        message.success('Configuration cleared!');
+        await refreshMode();
+      }
+    } catch (error) {
+      console.error('Clear config error:', error);
+      showAlert('error', 'Failed to clear configuration: ' + error.message);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -234,197 +240,292 @@ const KubernetesConfig = () => {
               />
             </Form.Item>
 
-            <Alert
-              message="Kubeconfig Path Information"
-              description={
-                <div>
-                  <p style={{ marginBottom: 8 }}>
-                    <strong>Windows Example:</strong> <code>E:\ifsroot\config\kube</code>
-                  </p>
-                  <p style={{ marginBottom: 8 }}>
-                    <strong>Linux/Mac Example:</strong> <code>/home/user/.kube/config</code>
-                  </p>
-                  <p style={{ marginBottom: 0 }}>
-                    The kubeconfig file contains the necessary credentials and cluster information to connect to your Kubernetes cluster.
-                  </p>
-                </div>
-              }
-              type="info"
-              showIcon
-              style={{ marginBottom: 24 }}
-            />
-
-            <Divider orientation="left">Alert Configuration</Divider>
-
-            
             <Form.Item
               name="emailGroupId"
-              label="Pod Failure Alert Group"
-              extra="Select which email group should receive Kubernetes pod failure alerts"
+              label="Alert Email Group"
             >
               <Select 
-                placeholder="Select email group for pod alerts (optional)"
+                placeholder="Select email group for Kubernetes alerts"
                 allowClear
-                size="large"
-                loading={emailGroups.length === 0}
               >
-                <Option value={null}>
-                  <Space>
-                    🔕 
-                    <span>No email alerts</span>
-                  </Space>
-                </Option>
                 {emailGroups.map(group => (
                   <Option key={group.id} value={group.id}>
-                    <Space>
-                      <TeamOutlined />
-                      <span>{group.name}</span>
-                      <span style={{ color: '#8c8c8c' }}>
-                        ({group.emails.length} recipients)
-                      </span>
-                    </Space>
+                    {group.name} ({group.emails.length} recipients)
                   </Option>
                 ))}
               </Select>
             </Form.Item>
 
-            {emailGroups.length === 0 && (
-              <Alert
-                message="No Email Groups Available"
-                description="Create email groups in Email Management to enable pod failure alerts."
-                type="info"
-                showIcon
-                style={{ marginBottom: 16 }}
+            <Divider orientation="left">
+              <Space>
+                <BellOutlined />
+                Monitoring Thresholds
+              </Space>
+            </Divider>
+
+            <Form.Item
+              name="monitoringEnabled"
+              valuePropName="checked"
+            >
+              <Switch 
+                checkedChildren="Enabled" 
+                unCheckedChildren="Disabled"
               />
-            )}
+              <Text style={{ marginLeft: 8 }}>Enable Kubernetes monitoring and alerts</Text>
+            </Form.Item>
+
+            <Row gutter={16}>
+              <Col xs={24} md={12}>
+                <Form.Item
+                  name="podFailureThreshold"
+                  label={
+                    <Space>
+                      <Text>Pod Failure Threshold</Text>
+                      <Tooltip title="Number of pod failures before sending alert">
+                        <ExclamationCircleOutlined style={{ color: '#1890ff' }} />
+                      </Tooltip>
+                    </Space>
+                  }
+                  rules={[{ required: true, message: 'Required!' }]}
+                >
+                  <InputNumber
+                    min={1}
+                    max={20}
+                    style={{ width: '100%' }}
+                    placeholder="e.g., 3"
+                  />
+                </Form.Item>
+              </Col>
+              <Col xs={24} md={12}>
+                <Form.Item
+                  name="namespaceAlertThreshold"
+                  label={
+                    <Space>
+                      <Text>Namespace Stop Threshold</Text>
+                      <Tooltip title="Number of pods that must disappear from a namespace to trigger alert">
+                        <ExclamationCircleOutlined style={{ color: '#1890ff' }} />
+                      </Tooltip>
+                    </Space>
+                  }
+                  rules={[{ required: true, message: 'Required!' }]}
+                >
+                  <InputNumber
+                    min={2}
+                    max={50}
+                    style={{ width: '100%' }}
+                    placeholder="e.g., 5"
+                  />
+                </Form.Item>
+              </Col>
+            </Row>
+
+            <Row gutter={16}>
+              <Col xs={24} md={12}>
+                <Form.Item
+                  name="nodeDownThreshold"
+                  label={
+                    <Space>
+                      <Text>Node Down Threshold</Text>
+                      <Tooltip title="Number of nodes that must be down before alerting">
+                        <ExclamationCircleOutlined style={{ color: '#1890ff' }} />
+                      </Tooltip>
+                    </Space>
+                  }
+                  rules={[{ required: true, message: 'Required!' }]}
+                >
+                  <InputNumber
+                    min={1}
+                    max={10}
+                    style={{ width: '100%' }}
+                    placeholder="e.g., 1"
+                  />
+                </Form.Item>
+              </Col>
+              <Col xs={24} md={12}>
+                <Form.Item
+                  name="checkIntervalMinutes"
+                  label={
+                    <Space>
+                      <Text>Check Interval (minutes)</Text>
+                      <Tooltip title="How often to check Kubernetes cluster status">
+                        <ExclamationCircleOutlined style={{ color: '#1890ff' }} />
+                      </Tooltip>
+                    </Space>
+                  }
+                  rules={[{ required: true, message: 'Required!' }]}
+                >
+                  <InputNumber
+                    min={1}
+                    max={60}
+                    style={{ width: '100%' }}
+                    placeholder="e.g., 2"
+                  />
+                </Form.Item>
+              </Col>
+            </Row>
+
+            <Form.Item
+              name="alertCooldownMinutes"
+              label={
+                <Space>
+                  <Text>Alert Cooldown (minutes)</Text>
+                  <Tooltip title="Minimum time between duplicate alerts for the same issue">
+                    <ExclamationCircleOutlined style={{ color: '#1890ff' }} />
+                  </Tooltip>
+                </Space>
+              }
+              rules={[{ required: true, message: 'Required!' }]}
+            >
+              <InputNumber
+                min={5}
+                max={1440}
+                style={{ width: '100%' }}
+                placeholder="e.g., 30"
+              />
+            </Form.Item>
+
+            <Divider orientation="left">Alert Types</Divider>
+
+            <Row gutter={16}>
+              <Col xs={24} md={8}>
+                <Form.Item
+                  name="alertOnPodStops"
+                  valuePropName="checked"
+                >
+                  <Switch size="small" />
+                  <Text style={{ marginLeft: 8 }}>Pod Stops/Scaling</Text>
+                </Form.Item>
+              </Col>
+              <Col xs={24} md={8}>
+                <Form.Item
+                  name="alertOnPodFailures"
+                  valuePropName="checked"
+                >
+                  <Switch size="small" />
+                  <Text style={{ marginLeft: 8 }}>Pod Failures</Text>
+                </Form.Item>
+              </Col>
+              <Col xs={24} md={8}>
+                <Form.Item
+                  name="alertOnNodeIssues"
+                  valuePropName="checked"
+                >
+                  <Switch size="small" />
+                  <Text style={{ marginLeft: 8 }}>Node Issues</Text>
+                </Form.Item>
+              </Col>
+            </Row>
 
             <Divider />
 
-            <Form.Item style={{ marginBottom: 0 }}>
-              <Space size="large">
-                <Button 
-                  type="default"
-                  icon={<CheckCircleOutlined />}
-                  onClick={handleTestConfig}
-                  loading={testLoading}
-                  size="large"
-                >
-                  Test Connection
-                </Button>
-                <Button 
-                  danger
-                  onClick={handleClearConfig}
-                  loading={loading}
-                  size="large"
-                >
-                  Clear Config
-                </Button>
-                <Button 
-                  type="primary"
-                  icon={<SaveOutlined />}
-                  onClick={handleSave}
-                  loading={loading}
-                  size="large"
-                >
-                  Save Configuration
-                </Button>                
-              </Space>
-            </Form.Item>
+            <Space>
+              <Button 
+                type="primary" 
+                icon={<SaveOutlined />}
+                onClick={handleSave}
+                loading={loading}
+              >
+                Save Configuration
+              </Button>
+              
+              <Button 
+                icon={<TestTubeOutlined />}
+                onClick={handleTestConfig}
+                loading={testLoading}
+              >
+                Test Connection
+              </Button>
+              
+              <Button 
+                danger
+                icon={<ClearOutlined />}
+                onClick={handleClearConfig}
+                loading={loading}
+              >
+                Clear Config
+              </Button>
+            </Space>
           </Form>
         </Card>
       </Col>
 
       <Col xs={24} lg={8}>
-        <Card title="Configuration Status">
-          {config ? (
+        <Card
+          title={
+            <Space>
+              <WarningOutlined />
+              Threshold Guide
+            </Space>
+          }
+        >
+          <Space direction="vertical" style={{ width: '100%' }} size="middle">
             <div>
-              <Alert
-                message={config.isConfigured ? "✅ Kubernetes Configured" : "⚠️ Kubernetes Not Configured"}
-                type={config.isConfigured ? "success" : "warning"}
-                showIcon
-                style={{ marginBottom: 16 }}
-              />
-
-              {config.isConfigured && (
-                <>
-                  <div style={{ marginBottom: 12 }}>
-                    <Text strong>Config Path:</Text>
-                    <br />
-                    <Text code style={{ fontSize: '11px', wordBreak: 'break-all' }}>
-                      {config.kubeconfigPath}
-                    </Text>
-                  </div>
-
-                  <div style={{ marginBottom: 12 }}>
-                    <Text strong>Pod Alerts:</Text>
-                    <br />
-                    <Text style={{ fontSize: '12px' }}>
-                      {config.emailGroupId ? 
-                        `📧 Enabled (Group: ${emailGroups.find(g => g.id === config.emailGroupId)?.name || config.emailGroupId})` : 
-                        '🔕 Disabled'
-                      }
-                    </Text>
-                  </div>
-
-                  <div style={{ marginBottom: 12 }}>
-                    <Text strong>Config File:</Text>
-                    <br />
-                    <Text code style={{ fontSize: '11px' }}>
-                      backend/data/kubernetes-config.json
-                    </Text>
-                  </div>
-
-                  <div>
-                    <Text strong>Last Updated:</Text>
-                    <br />
-                    <Text style={{ fontSize: '12px' }}>
-                      {new Date(config.lastUpdated).toLocaleString()}
-                    </Text>
-                  </div>
-                </>
-              )}
+              <Text strong>Pod Failure Threshold</Text>
+              <br />
+              <Text type="secondary" style={{ fontSize: '12px' }}>
+                Alert when X pods fail within the check interval. Recommended: 3-5 for small clusters, 5-10 for large clusters.
+              </Text>
             </div>
-          ) : (
-            <div style={{ textAlign: 'center', padding: '20px' }}>
-              <CloudOutlined style={{ fontSize: 48, color: '#d9d9d9', marginBottom: 16 }} />
-              <Text type="secondary">No configuration found</Text>
+
+            <div>
+              <Text strong>Namespace Stop Threshold</Text>
+              <br />
+              <Text type="secondary" style={{ fontSize: '12px' }}>
+                Alert when X pods disappear from a namespace (indicates stop/scale operations). Recommended: 2-5.
+              </Text>
             </div>
-          )}
+
+            <div>
+              <Text strong>Node Down Threshold</Text>
+              <br />
+              <Text type="secondary" style={{ fontSize: '12px' }}>
+                Alert when X nodes are unavailable. Recommended: 1 for critical clusters.
+              </Text>
+            </div>
+
+            <div>
+              <Text strong>Check Interval</Text>
+              <br />
+              <Text type="secondary" style={{ fontSize: '12px' }}>
+                How often to scan the cluster. Recommended: 2-5 minutes for active monitoring.
+              </Text>
+            </div>
+
+            <div>
+              <Text strong>Alert Cooldown</Text>
+              <br />
+              <Text type="secondary" style={{ fontSize: '12px' }}>
+                Prevents spam alerts. Recommended: 30-60 minutes for most issues.
+              </Text>
+            </div>
+          </Space>
         </Card>
 
-        <Card title="How to Find Kubeconfig" style={{ marginTop: 16 }}>
-          <div style={{ fontSize: '12px' }}>
-            <div style={{ marginBottom: 12 }}>
-              <Text strong>Default Locations:</Text>
-              <br />
-              <Text>Windows: <code>%USERPROFILE%\.kube\config</code></Text>
-              <br />
-              <Text>Linux/Mac: <code>~/.kube/config</code></Text>
-            </div>
-
-            <div style={{ marginBottom: 12 }}>
-              <Text strong>Check Current Config:</Text>
-              <br />
-              <Text code style={{ fontSize: '10px' }}>kubectl config view --flatten</Text>
-            </div>
-
-            <div style={{ marginBottom: 12 }}>
-              <Text strong>Find Config Path:</Text>
-              <br />
-              <Text code style={{ fontSize: '10px' }}>echo $KUBECONFIG</Text>
-            </div>
-          </div>
-        </Card>
-
-        <Card title="Requirements" style={{ marginTop: 16 }}>
-          <ul style={{ fontSize: '12px', paddingLeft: 20, marginBottom: 0 }}>
-            <li>Valid kubeconfig file</li>
-            <li>Network access to Kubernetes cluster</li>
-            <li>Proper authentication credentials</li>
-            <li>Read permissions on config file</li>
-            <li>Email group configured for alerts (optional)</li>
-          </ul>
-        </Card>
+        {config.isConfigured && (
+          <Card
+            title="Current Status"
+            style={{ marginTop: 16 }}
+          >
+            <Space direction="vertical" style={{ width: '100%' }}>
+              <div>
+                <Text strong>Connection: </Text>
+                <Text type="success">Configured</Text>
+              </div>
+              <div>
+                <Text strong>Monitoring: </Text>
+                <Text type={config.thresholds?.monitoringEnabled ? "success" : "warning"}>
+                  {config.thresholds?.monitoringEnabled ? "Enabled" : "Disabled"}
+                </Text>
+              </div>
+              <div>
+                <Text strong>Email Alerts: </Text>
+                <Text type={config.emailGroupId ? "success" : "warning"}>
+                  {config.emailGroupId ? "Configured" : "Not Set"}
+                </Text>
+              </div>
+            </Space>
+          </Card>
+        )}
       </Col>
     </Row>
   );

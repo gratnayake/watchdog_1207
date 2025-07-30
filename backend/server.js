@@ -266,48 +266,48 @@ app.get('/api/database/email-config', (req, res) => {
 
 app.post('/api/database/config', (req, res) => {
   try {
-    const { host, port, serviceName, username, password, emailGroupId } = req.body;
+    const { host, port, serviceName, username, password, emailGroupId, thresholds } = req.body;
 
-    console.log('💾 Saving database config with data:', {
-      host,
-      port,
-      serviceName,
-      username,
+    console.log('💾 Saving database config with thresholds:', {
+      host: host || 'empty',
       emailGroupId: emailGroupId || 'none',
-      password: password ? '***' : 'empty'
+      hasThresholds: !!thresholds
     });
 
-    // Validate required fields
-    if (!host || !port || !serviceName || !username || !password) {
-      return res.status(400).json({ 
-        success: false,
-        error: 'All database connection fields are required' 
-      });
-    }
-
-    // Prepare config data including email group
+    // Prepare config data including thresholds
     const configData = { 
-      host, 
-      port, 
-      serviceName, 
-      username, 
-      password,
-      emailGroupId: emailGroupId || null // Include email group ID
+      host: host || '',
+      port: port || 1521,
+      serviceName: serviceName || '',
+      username: username || '',
+      password: password || '',
+      emailGroupId: emailGroupId || null,
+      thresholds: thresholds || null
     };
     
-    const saved = dbConfigService.updateConfig(configData);
+    const saved = databaseConfigService.updateConfig(configData);
+    
+    // Also save thresholds to threshold service if provided
+    if (thresholds && saved) {
+      thresholdService.updateDatabaseThresholds({
+        ...thresholds,
+        emailGroupId: emailGroupId
+      });
+      console.log('✅ Database thresholds saved to threshold service');
+    }
     
     if (saved) {
-      console.log('✅ Database config saved successfully with email group');
+      console.log('✅ Database config saved successfully with thresholds');
+      
       res.json({ 
         success: true, 
-        message: 'Database configuration saved successfully',
-        config: dbConfigService.getPublicConfig()
+        message: 'Database configuration and thresholds saved successfully',
+        config: databaseConfigService.getPublicConfig()
       });
     } else {
       res.status(500).json({ 
         success: false,
-        error: 'Failed to save database configuration' 
+        error: 'Failed to save database configuration'
       });
     }
   } catch (error) {
@@ -1087,11 +1087,12 @@ app.get('/api/kubernetes/config', (req, res) => {
 
 app.post('/api/kubernetes/config', (req, res) => {
   try {
-    const { kubeconfigPath, emailGroupId } = req.body;
+    const { kubeconfigPath, emailGroupId, thresholds } = req.body;
 
     console.log('💾 Saving Kubernetes config with data:', {
       kubeconfigPath: kubeconfigPath || 'empty',
-      emailGroupId: emailGroupId || 'none'
+      emailGroupId: emailGroupId || 'none',
+      hasThresholds: !!thresholds
     });
 
     // Validate kubeconfig path if provided and not empty
@@ -1109,29 +1110,39 @@ app.post('/api/kubernetes/config', (req, res) => {
       console.log('✅ Empty path - clearing configuration');
     }
 
-    // Prepare config data including email group
+    // Prepare config data including thresholds
     const configData = { 
       kubeconfigPath: kubeconfigPath || '',
-      emailGroupId: emailGroupId || null // Include email group ID
+      emailGroupId: emailGroupId || null,
+      thresholds: thresholds || null
     };
     
     const saved = kubernetesConfigService.updateConfig(configData);
     
+    // Also save thresholds to threshold service if provided
+    if (thresholds && saved) {
+      thresholdService.updateKubernetesThresholds({
+        ...thresholds,
+        emailGroupId: emailGroupId
+      });
+      console.log('✅ Kubernetes thresholds saved to threshold service');
+    }
+    
     if (saved) {
-      console.log('✅ Kubernetes config saved successfully with email group');
+      console.log('✅ Kubernetes config saved successfully with thresholds');
       
       // Reinitialize Kubernetes service with new config
       kubernetesService.refreshConfiguration();
       
       res.json({ 
         success: true, 
-        message: 'Kubernetes configuration saved successfully',
+        message: 'Kubernetes configuration and thresholds saved successfully',
         config: kubernetesConfigService.getPublicConfig()
       });
     } else {
       res.status(500).json({ 
         success: false,
-        error: 'Failed to save Kubernetes configuration' 
+        error: 'Failed to save Kubernetes configuration'
       });
     }
   } catch (error) {
@@ -1267,7 +1278,7 @@ app.post('/api/thresholds/db-size', (req, res) => {
   try {
     const saved = thresholdService.updateDbSizeThreshold(req.body);
     if (saved) {
-      res.json({ success: true, message: 'Threshold settings saved' });
+      res.json({ success: true, message: 'Database size threshold settings saved' });
     } else {
       res.status(500).json({ success: false, error: 'Failed to save' });
     }
@@ -1277,7 +1288,60 @@ app.post('/api/thresholds/db-size', (req, res) => {
 });
 
 
-// ENHANCED SCRIPT EXECUTION ROUTE WITH KUBECONFIG SUPPORT
+app.get('/api/thresholds/database', (req, res) => {
+  try {
+    const thresholds = thresholdService.getDatabaseThresholds();
+    res.json({ success: true, data: thresholds });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get('/api/thresholds/all', (req, res) => {
+  try {
+    const allThresholds = thresholdService.getAllThresholds();
+    res.json({ success: true, data: allThresholds });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/thresholds/database', (req, res) => {
+  try {
+    const saved = thresholdService.updateDatabaseThresholds(req.body);
+    if (saved) {
+      res.json({ success: true, message: 'Database monitoring thresholds saved' });
+    } else {
+      res.status(500).json({ success: false, error: 'Failed to save' });
+    }
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// NEW: Kubernetes thresholds
+app.get('/api/thresholds/kubernetes', (req, res) => {
+  try {
+    const thresholds = thresholdService.getKubernetesThresholds();
+    res.json({ success: true, data: thresholds });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/thresholds/kubernetes', (req, res) => {
+  try {
+    const saved = thresholdService.updateKubernetesThresholds(req.body);
+    if (saved) {
+      res.json({ success: true, message: 'Kubernetes monitoring thresholds saved' });
+    } else {
+      res.status(500).json({ success: false, error: 'Failed to save' });
+    }
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 app.post('/api/execute-script', async (req, res) => {
   try {
     const { scriptPath, arguments: args, name } = req.body;
@@ -2826,45 +2890,7 @@ app.use((req, res) => {
   });
 });
 
-// Add this debug endpoint
-app.get('/api/kubernetes/pods/debug', async (req, res) => {
-  try {
-    const { namespace = 'all' } = req.query;
-    
-    // Get both data sources
-    const currentPods = await kubernetesService.getAllPodsWithContainers();
-    const comprehensivePods = podLifecycleService.getComprehensivePodList({
-      includeDeleted: true,
-      namespace: namespace === 'all' ? null : namespace,
-      sortBy: 'lastSeen'
-    });
-    
-    console.log(`🔍 Debug: ${currentPods.length} current pods, ${comprehensivePods.length} lifecycle pods`);
-    
-    res.json({
-      success: true,
-      debug: {
-        currentPodsCount: currentPods.length,
-        lifecyclePodsCount: comprehensivePods.length,
-        currentPodsSample: currentPods.slice(0, 2), // First 2 current pods
-        lifecyclePodsSample: comprehensivePods.slice(0, 2), // First 2 lifecycle pods
-        mergeIssues: comprehensivePods.map(lp => {
-          const match = currentPods.find(cp => cp.name === lp.name && cp.namespace === lp.namespace);
-          return {
-            name: lp.name,
-            namespace: lp.namespace,
-            hasMatch: !!match,
-            lifecycleReady: lp.readyContainers,
-            currentReady: match ? match.readyContainers : 'no-match'
-          };
-        }).slice(0, 5) // First 5 merge results
-      }
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-// Auto-start URL monitoring when server starts
+
 setTimeout(() => {
   console.log('🌐 Auto-starting URL monitoring...');
   const started = urlMonitoringService.startAllMonitoring();
@@ -2903,7 +2929,7 @@ setTimeout(() => {
   } else {
     console.log('⚠️ Kubernetes not configured - monitoring not started');
   }
-}, 4000); // Wait 4 seconds for services to initialize
+}, 4000); 
 
 
 setTimeout(() => {
