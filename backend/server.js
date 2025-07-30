@@ -2253,12 +2253,28 @@ app.get('/api/kubernetes/pods/enhanced', async (req, res) => {
     const changes = await podLifecycleService.updatePodLifecycle(currentPods);
     console.log(`🔄 Lifecycle changes detected: ${changes.length}`);
     
-    // Log different types of changes
-    const createdCount = changes.filter(c => c.type === 'created').length;
-    const statusChanges = changes.filter(c => c.type === 'status_change').length;
-    const disappearances = changes.filter(c => c.type === 'mass_disappearance').length;
-    
-    console.log(`📊 Change breakdown: ${createdCount} created, ${statusChanges} status changes, ${disappearances} mass disappearances`);
+    // NEW: Check for mass disappearance and send email alerts
+    const disappearanceAlerts = changes.filter(c => c.type === 'mass_disappearance');
+    if (disappearanceAlerts.length > 0) {
+      console.log(`🛑 Processing ${disappearanceAlerts.length} mass disappearance alerts for email...`);
+      
+      // Get Kubernetes configuration for email group
+      const kubeConfig = kubernetesConfigService.getConfig();
+      if (kubeConfig.emailGroupId) {
+        console.log(`📧 Sending disappearance alerts to email group: ${kubeConfig.emailGroupId}`);
+        
+        for (const alert of disappearanceAlerts) {
+          try {
+            await sendPodDisappearanceEmail(alert, kubeConfig.emailGroupId);
+            console.log(`✅ Email sent for ${alert.namespace} disappearance (${alert.podCount} pods)`);
+          } catch (emailError) {
+            console.error(`❌ Failed to send email for ${alert.namespace}:`, emailError.message);
+          }
+        }
+      } else {
+        console.log('⚠️ No email group configured for Kubernetes alerts - skipping email');
+      }
+    }
     
     // Process current pods and enhance them
     let podsToReturn = [];
@@ -2314,17 +2330,8 @@ app.get('/api/kubernetes/pods/enhanced', async (req, res) => {
     // Get statistics
     const stats = podLifecycleService.getPodStatistics(namespace === 'all' ? null : namespace);
     
-    // ENHANCED: Include all change types in response
     console.log(`✅ Final pods to send: ${podsToReturn.length}`);
     console.log(`🔔 Total alerts to send: ${changes.length}`);
-    
-    // Log disappearance alerts specifically
-    const disappearanceAlerts = changes.filter(c => c.type === 'mass_disappearance');
-    if (disappearanceAlerts.length > 0) {
-      console.log('🛑 Disappearance alerts:', disappearanceAlerts.map(a => 
-        `${a.namespace}: ${a.podCount} pods disappeared`
-      ).join(', '));
-    }
     
     res.json({
       success: true,
@@ -2335,7 +2342,7 @@ app.get('/api/kubernetes/pods/enhanced', async (req, res) => {
           deleted: 0,
           recentlyDeleted: 0
         },
-        changes: changes, // Include ALL changes (created, status_change, mass_disappearance)
+        changes: changes,
         timestamp: new Date()
       }
     });
@@ -2348,6 +2355,89 @@ app.get('/api/kubernetes/pods/enhanced', async (req, res) => {
     });
   }
 });
+
+async function sendPodDisappearanceEmail(disappearanceAlert, emailGroupId) {
+  try {
+    const emailService = require('./services/emailService');
+    const groups = emailService.getEmailGroups();
+    const targetGroup = groups.find(g => g.id === emailGroupId && g.enabled);
+    
+    if (!targetGroup || targetGroup.emails.length === 0) {
+      console.log('⚠️ No valid email group found for pod disappearance alert');
+      return false;
+    }
+
+    const { namespace, podCount, pods, timestamp } = disappearanceAlert;
+    const alertTime = new Date(timestamp);
+
+    const mailOptions = {
+      from: emailService.getEmailConfig().user,
+      to: targetGroup.emails.join(','),
+      subject: `🛑 KUBERNETES ALERT: ${podCount} pods stopped in '${namespace}'`,
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <div style="background-color: #ff4d4f; color: white; padding: 20px; text-align: center;">
+            <h1 style="margin: 0;">🛑 KUBERNETES PODS STOPPED</h1>
+          </div>
+          
+          <div style="padding: 20px; background-color: #fff2f0; border-left: 5px solid #ff4d4f;">
+            <h2 style="color: #ff4d4f; margin-top: 0;">Mass Pod Disappearance Detected</h2>
+            
+            <table style="width: 100%; border-collapse: collapse; margin: 15px 0;">
+              <tr>
+                <td style="padding: 8px; font-weight: bold; border-bottom: 1px solid #ddd;">Namespace:</td>
+                <td style="padding: 8px; color: #ff4d4f; font-weight: bold; border-bottom: 1px solid #ddd;">${namespace}</td>
+              </tr>
+              <tr style="background-color: #ffffff;">
+                <td style="padding: 8px; font-weight: bold; border-bottom: 1px solid #ddd;">Pods Stopped:</td>
+                <td style="padding: 8px; border-bottom: 1px solid #ddd;">${podCount}</td>
+              </tr>
+              <tr>
+                <td style="padding: 8px; font-weight: bold; border-bottom: 1px solid #ddd;">Detection Time:</td>
+                <td style="padding: 8px; border-bottom: 1px solid #ddd;">${alertTime.toLocaleString()}</td>
+              </tr>
+            </table>
+            
+            <h3 style="color: #ff4d4f;">Affected Pods:</h3>
+            <div style="background-color: #ffffff; border: 1px solid #ddd; padding: 10px; margin: 10px 0;">
+              ${pods.slice(0, 10).map(pod => `
+                <div style="padding: 4px 0; border-bottom: 1px solid #f0f0f0;">
+                  <strong>${pod.name}</strong> 
+                  <span style="color: #666; font-size: 12px;">(Last status: ${pod.status})</span>
+                </div>
+              `).join('')}
+              ${pods.length > 10 ? `<div style="padding: 4px 0; color: #666; font-style: italic;">... and ${pods.length - 10} more pods</div>` : ''}
+            </div>
+            
+            <div style="background-color: #fff3cd; border: 1px solid #ffeaa7; padding: 15px; margin: 15px 0; border-radius: 4px;">
+              <h3 style="margin-top: 0; color: #856404;">⚠️ RECOMMENDED ACTIONS</h3>
+              <ul style="color: #856404; margin: 10px 0;">
+                <li>Check if this was an intentional maintenance operation</li>
+                <li>Verify Kubernetes cluster status and connectivity</li>
+                <li>Review deployment and service configurations</li>
+                <li>Check for resource constraints or node issues</li>
+                <li>Consider restarting services if this was unintentional</li>
+              </ul>
+            </div>
+          </div>
+          
+          <div style="background-color: #e9ecef; padding: 15px; text-align: center; font-size: 12px; color: #6c757d;">
+            <p style="margin: 0;">Alert sent to: ${targetGroup.name}</p>
+            <p style="margin: 5px 0 0 0;">Kubernetes Pod Monitoring System</p>
+          </div>
+        </div>
+      `
+    };
+
+    await emailService.transporter.sendMail(mailOptions);
+    console.log(`📧 ✅ Pod disappearance alert sent successfully to ${targetGroup.emails.length} recipients`);
+    return true;
+    
+  } catch (error) {
+    console.error('📧 ❌ Failed to send pod disappearance email:', error);
+    return false;
+  }
+}
 
 function isPodReadyComplete(pod) {
   // Method 1: Check if pod.ready is true (most reliable)
@@ -2932,6 +3022,108 @@ app.post('/api/kubernetes/pods/import', async (req, res) => {
   }
 });
 
+app.post('/api/kubernetes/debug/test-pod-alert', async (req, res) => {
+  try {
+    console.log('🧪 Testing pod disappearance email alert...');
+    
+    // Get Kubernetes configuration
+    const kubeConfig = kubernetesConfigService.getConfig();
+    if (!kubeConfig.emailGroupId) {
+      return res.status(400).json({
+        success: false,
+        error: 'No email group configured for Kubernetes alerts'
+      });
+    }
+    
+    // Create a fake disappearance alert for testing
+    const testAlert = {
+      type: 'mass_disappearance',
+      namespace: 'uattest',
+      podCount: 5,
+      timestamp: new Date().toISOString(),
+      message: 'TEST: 5 pods stopped/disappeared in namespace \'uattest\'',
+      pods: [
+        { name: 'test-pod-1', namespace: 'uattest', status: 'Running' },
+        { name: 'test-pod-2', namespace: 'uattest', status: 'Running' },
+        { name: 'test-pod-3', namespace: 'uattest', status: 'Running' },
+        { name: 'test-pod-4', namespace: 'uattest', status: 'Running' },
+        { name: 'test-pod-5', namespace: 'uattest', status: 'Running' }
+      ],
+      severity: 'warning'
+    };
+    
+    // Send test email
+    const emailSent = await sendPodDisappearanceEmail(testAlert, kubeConfig.emailGroupId);
+    
+    if (emailSent) {
+      res.json({
+        success: true,
+        message: 'Test pod disappearance email sent successfully!',
+        emailGroupId: kubeConfig.emailGroupId,
+        testAlert: testAlert
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        error: 'Failed to send test email'
+      });
+    }
+    
+  } catch (error) {
+    console.error('❌ Test email error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Add another debug route to check your email configuration
+app.get('/api/kubernetes/debug/email-config', (req, res) => {
+  try {
+    const emailService = require('./services/emailService');
+    const kubeConfig = kubernetesConfigService.getConfig();
+    const emailGroups = emailService.getEmailGroups();
+    
+    const debugInfo = {
+      kubernetesConfig: {
+        isConfigured: kubeConfig.isConfigured,
+        hasEmailGroup: !!kubeConfig.emailGroupId,
+        emailGroupId: kubeConfig.emailGroupId
+      },
+      emailService: {
+        isConfigured: emailService.isConfigured,
+        totalGroups: emailGroups.length,
+        enabledGroups: emailGroups.filter(g => g.enabled).length
+      },
+      selectedEmailGroup: null
+    };
+    
+    if (kubeConfig.emailGroupId) {
+      const selectedGroup = emailGroups.find(g => g.id === kubeConfig.emailGroupId);
+      if (selectedGroup) {
+        debugInfo.selectedEmailGroup = {
+          id: selectedGroup.id,
+          name: selectedGroup.name,
+          enabled: selectedGroup.enabled,
+          emailCount: selectedGroup.emails.length,
+          emails: selectedGroup.emails // Show emails for debugging
+        };
+      }
+    }
+    
+    res.json({
+      success: true,
+      debug: debugInfo
+    });
+    
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error('💥 Unhandled error:', err);
@@ -2977,17 +3169,21 @@ setTimeout(() => {
 
 // Auto-start Kubernetes monitoring if configured
 setTimeout(() => {
-  const kubernetesConfig = kubernetesConfigService.getConfig();
-  if (kubernetesConfig.isConfigured) {
-    console.log('☸️ Auto-starting Kubernetes monitoring...');
-    const started = kubernetesMonitoringService.startMonitoring();
-    if (started) {
-      console.log('✅ Kubernetes monitoring started automatically');
+  try {
+    const kubeConfig = kubernetesConfigService.getConfig();
+    if (kubeConfig.isConfigured && kubeConfig.emailGroupId) {
+      console.log('🔄 Auto-starting Kubernetes monitoring...');
+      const started = kubernetesMonitoringService.startMonitoring();
+      if (started) {
+        console.log('✅ Kubernetes monitoring started automatically');
+      } else {
+        console.log('⚠️ Kubernetes monitoring failed to start automatically');
+      }
     } else {
-      console.log('❌ Failed to auto-start Kubernetes monitoring');
+      console.log('⚠️ Kubernetes monitoring not started - configuration incomplete');
     }
-  } else {
-    console.log('⚠️ Kubernetes not configured - monitoring not started');
+  } catch (error) {
+    console.error('❌ Failed to auto-start Kubernetes monitoring:', error);
   }
 }, 4000); 
 
