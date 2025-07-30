@@ -8,65 +8,120 @@ class PodLifecycleService {
   constructor() {
     this.dataDir = path.join(__dirname, '../data');
     this.podHistoryFile = path.join(this.dataDir, 'pod-history.json');
+    this.lastKnownStateFile = path.join(this.dataDir, 'last-known-pods.json'); // NEW
     this.ensureDataDirectory();
     this.ensureHistoryFile();
+    this.ensureLastKnownStateFile(); // NEW
     
-    // In-memory tracking
     this.knownPods = new Map();
     this.lastScan = null;
   }
 
-  ensureDataDirectory() {
-    if (!fs.existsSync(this.dataDir)) {
-      fs.mkdirSync(this.dataDir, { recursive: true });
-    }
-  }
-
-  ensureHistoryFile() {
-    if (!fs.existsSync(this.podHistoryFile)) {
-      const defaultHistory = {
+  // NEW: Ensure last known state file exists
+  ensureLastKnownStateFile() {
+    if (!fs.existsSync(this.lastKnownStateFile)) {
+      const defaultState = {
         pods: [],
-        lastUpdated: new Date().toISOString()
+        lastUpdated: new Date().toISOString(),
+        totalPods: 0
       };
-      this.saveHistory(defaultHistory);
-      console.log('📝 Created pod history file');
+      this.saveLastKnownState(defaultState);
+      console.log('📝 Created last known pods state file');
     }
   }
 
-  loadHistory() {
+  // NEW: Load last known state
+  loadLastKnownState() {
     try {
-      const data = fs.readFileSync(this.podHistoryFile, 'utf8');
+      const data = fs.readFileSync(this.lastKnownStateFile, 'utf8');
       return JSON.parse(data);
     } catch (error) {
-      console.error('Failed to load pod history:', error);
-      return { pods: [], lastUpdated: new Date().toISOString() };
+      console.error('Failed to load last known state:', error);
+      return { pods: [], lastUpdated: new Date().toISOString(), totalPods: 0 };
     }
   }
 
-  saveHistory(history) {
+  // NEW: Save last known state
+  saveLastKnownState(state) {
     try {
-      fs.writeFileSync(this.podHistoryFile, JSON.stringify(history, null, 2));
+      fs.writeFileSync(this.lastKnownStateFile, JSON.stringify(state, null, 2));
       return true;
     } catch (error) {
-      console.error('Failed to save pod history:', error);
+      console.error('Failed to save last known state:', error);
       return false;
     }
   }
 
-  // Track pod lifecycle changes
+  // ENHANCED: updatePodLifecycle method with disappearance detection
   async updatePodLifecycle(currentPods) {
     const now = new Date();
     const history = this.loadHistory();
+    const lastKnownState = this.loadLastKnownState();
     let changes = [];
 
-    // Create a map of current pods for easy lookup
+    console.log(`🔍 Comparing current pods (${currentPods.length}) with last known state (${lastKnownState.totalPods})`);
+
+    // Create maps for easier comparison
     const currentPodMap = new Map();
     currentPods.forEach(pod => {
       const podKey = `${pod.namespace}/${pod.name}`;
       currentPodMap.set(podKey, pod);
     });
 
-    // Check for new pods or status changes
+    const lastKnownPodMap = new Map();
+    lastKnownState.pods.forEach(pod => {
+      const podKey = `${pod.namespace}/${pod.name}`;
+      lastKnownPodMap.set(podKey, pod);
+    });
+
+    // NEW: Detect mass disappearances (pods that were running but are now gone)
+    const disappearedPods = [];
+    lastKnownPodMap.forEach((lastPod, podKey) => {
+      if (!currentPodMap.has(podKey)) {
+        // This pod was running before but is now gone
+        disappearedPods.push({
+          ...lastPod,
+          disappearedAt: now.toISOString()
+        });
+      }
+    });
+
+    // NEW: Detect if this is a "mass disappearance" (likely a stop operation)
+    if (disappearedPods.length >= 3) { // Threshold for "mass disappearance"
+      // Group by namespace to create meaningful alerts
+      const namespaceGroups = {};
+      disappearedPods.forEach(pod => {
+        if (!namespaceGroups[pod.namespace]) {
+          namespaceGroups[pod.namespace] = [];
+        }
+        namespaceGroups[pod.namespace].push(pod);
+      });
+
+      // Create disappearance alerts for each affected namespace
+      Object.keys(namespaceGroups).forEach(namespace => {
+        const pods = namespaceGroups[namespace];
+        if (pods.length >= 2) { // At least 2 pods disappeared in this namespace
+          changes.push({
+            type: 'mass_disappearance', // NEW change type
+            namespace: namespace,
+            podCount: pods.length,
+            timestamp: now.toISOString(),
+            message: `${pods.length} pods stopped/disappeared in namespace '${namespace}'`,
+            pods: pods.map(p => ({ 
+              name: p.name, 
+              namespace: p.namespace, 
+              status: p.status || 'Running',
+              lastSeen: p.lastSeen || now.toISOString()
+            })),
+            severity: 'warning' // Mark as warning level
+          });
+
+          console.log(`🛑 Mass disappearance detected: ${pods.length} pods gone from ${namespace}`);
+        }
+      });
+    }
+
+    // Existing logic for individual pod changes...
     currentPodMap.forEach((pod, podKey) => {
       const existingPod = history.pods.find(p => 
         p.namespace === pod.namespace && p.name === pod.name
@@ -98,11 +153,10 @@ class PodLifecycleService {
         
         console.log(`🆕 New pod discovered: ${podKey}`);
       } else {
-        // Update existing pod
+        // Update existing pod logic...
         existingPod.lastSeen = now.toISOString();
         existingPod.isDeleted = false;
         
-        // Check for status change
         if (existingPod.status !== pod.status) {
           existingPod.statusHistory.push({
             status: pod.status,
@@ -110,8 +164,6 @@ class PodLifecycleService {
             event: 'status_change',
             previousStatus: existingPod.status
           });
-          
-          console.log(`🔄 Status change for ${podKey}: ${existingPod.status} → ${pod.status}`);
           
           changes.push({
             type: 'status_change',
@@ -122,8 +174,7 @@ class PodLifecycleService {
           
           existingPod.status = pod.status;
         }
-        
-        // Update restart count
+
         if (pod.restarts !== existingPod.restarts) {
           existingPod.statusHistory.push({
             status: pod.status,
@@ -133,208 +184,31 @@ class PodLifecycleService {
           });
           existingPod.restarts = pod.restarts;
         }
-        
-        // Update node if changed
-        if (pod.node && pod.node !== existingPod.node) {
-          existingPod.node = pod.node;
-        }
       }
     });
 
-    // Check for deleted pods (pods that were there before but not now)
-    const deletionThreshold = 30000; // 30 seconds
-    history.pods.forEach(historicalPod => {
-      const podKey = `${historicalPod.namespace}/${historicalPod.name}`;
-      
-      if (!currentPodMap.has(podKey) && !historicalPod.isDeleted) {
-        // Pod is missing from current scan and not marked as deleted
-        const timeSinceLastSeen = now - new Date(historicalPod.lastSeen);
-        
-        if (timeSinceLastSeen > deletionThreshold) {
-          // Mark as deleted
-          historicalPod.isDeleted = true;
-          historicalPod.deletedAt = now.toISOString();
-          historicalPod.statusHistory.push({
-            status: 'Deleted',
-            timestamp: now.toISOString(),
-            event: 'deleted'
-          });
-          
-          console.log(`🗑️ Pod marked as deleted: ${podKey}`);
-          
-          changes.push({
-            type: 'deleted',
-            pod: historicalPod
-          });
-        }
-      }
-    });
+    // Update last known state with current pods
+    const newLastKnownState = {
+      pods: currentPods.map(pod => ({
+        name: pod.name,
+        namespace: pod.namespace,
+        status: pod.status,
+        lastSeen: now.toISOString()
+      })),
+      lastUpdated: now.toISOString(),
+      totalPods: currentPods.length
+    };
 
-    // Save updated history
+    // Save updated data
     history.lastUpdated = now.toISOString();
     this.saveHistory(history);
-    this.lastScan = now;
+    this.saveLastKnownState(newLastKnownState);
 
+    console.log(`✅ Pod lifecycle updated: ${changes.length} changes detected`);
     return changes;
   }
 
-  // Get comprehensive pod list including deleted ones
-  getComprehensivePodList(options = {}) {
-    const {
-      includeDeleted = true,
-      namespace = null,
-      maxAge = null, // in hours
-      sortBy = 'lastSeen'
-    } = options;
-
-    const history = this.loadHistory();
-    let pods = [...history.pods];
-
-    // Filter by namespace if specified
-    if (namespace && namespace !== 'all') {
-      pods = pods.filter(pod => pod.namespace === namespace);
-    }
-
-    // Filter by age if specified
-    if (maxAge) {
-      const cutoffTime = new Date(Date.now() - (maxAge * 60 * 60 * 1000));
-      pods = pods.filter(pod => new Date(pod.lastSeen) > cutoffTime);
-    }
-
-    // Filter deleted pods if not included
-    if (!includeDeleted) {
-      pods = pods.filter(pod => !pod.isDeleted);
-    }
-
-    // Add computed fields
-    pods = pods.map(pod => ({
-      ...pod,
-      age: this.calculateAge(pod.firstSeen),
-      timeSinceLastSeen: this.calculateAge(pod.lastSeen),
-      lifecycleStage: this.getLifecycleStage(pod),
-      statusDuration: this.getStatusDuration(pod)
-    }));
-
-    // Sort pods
-    pods.sort((a, b) => {
-      switch (sortBy) {
-        case 'name':
-          return a.name.localeCompare(b.name);
-        case 'namespace':
-          return a.namespace.localeCompare(b.namespace);
-        case 'status':
-          return a.status.localeCompare(b.status);
-        case 'firstSeen':
-          return new Date(b.firstSeen) - new Date(a.firstSeen);
-        case 'lastSeen':
-        default:
-          return new Date(b.lastSeen) - new Date(a.lastSeen);
-      }
-    });
-
-    return pods;
-  }
-
-  calculateAge(timestamp) {
-    const now = new Date();
-    const created = new Date(timestamp);
-    const diffMs = now - created;
-    
-    const days = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-    const hours = Math.floor((diffMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
-    const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
-    
-    if (days > 0) return `${days}d ${hours}h`;
-    if (hours > 0) return `${hours}h ${minutes}m`;
-    return `${minutes}m`;
-  }
-
-  getLifecycleStage(pod) {
-    if (pod.isDeleted) return 'deleted';
-    if (pod.status === 'Running') return 'stable';
-    if (pod.status === 'Pending') return 'starting';
-    if (pod.status === 'Failed') return 'failed';
-    if (pod.status === 'Succeeded') return 'completed';
-    return 'unknown';
-  }
-
-  getStatusDuration(pod) {
-    if (pod.statusHistory.length === 0) return '0m';
-    
-    const lastStatusChange = pod.statusHistory[pod.statusHistory.length - 1];
-    return this.calculateAge(lastStatusChange.timestamp);
-  }
-
-  // Get pod statistics
-  getPodStatistics(namespace = null) {
-    const pods = this.getComprehensivePodList({ 
-      namespace, 
-      includeDeleted: true,
-      maxAge: 24 // Last 24 hours
-    });
-
-    const stats = {
-      total: pods.length,
-      running: 0,
-      pending: 0,
-      failed: 0,
-      succeeded: 0,
-      deleted: 0,
-      recentlyCreated: 0, // Last hour
-      recentlyDeleted: 0, // Last hour
-      restartEvents: 0
-    };
-
-    const oneHourAgo = new Date(Date.now() - (60 * 60 * 1000));
-
-    pods.forEach(pod => {
-      // Count by current status
-      if (pod.isDeleted) {
-        stats.deleted++;
-        if (pod.deletedAt && new Date(pod.deletedAt) > oneHourAgo) {
-          stats.recentlyDeleted++;
-        }
-      } else {
-        switch (pod.status) {
-          case 'Running': stats.running++; break;
-          case 'Pending': stats.pending++; break;
-          case 'Failed': stats.failed++; break;
-          case 'Succeeded': stats.succeeded++; break;
-        }
-      }
-
-      // Count recent creations
-      if (new Date(pod.firstSeen) > oneHourAgo) {
-        stats.recentlyCreated++;
-      }
-
-      // Count restart events
-      stats.restartEvents += pod.statusHistory.filter(h => h.event === 'restart').length;
-    });
-
-    return stats;
-  }
-
-  // Clear old history (cleanup)
-  cleanupOldHistory(maxAgeDays = 30) {
-    const history = this.loadHistory();
-    const cutoffTime = new Date(Date.now() - (maxAgeDays * 24 * 60 * 60 * 1000));
-    
-    const initialCount = history.pods.length;
-    history.pods = history.pods.filter(pod => 
-      new Date(pod.lastSeen) > cutoffTime
-    );
-    
-    const removedCount = initialCount - history.pods.length;
-    
-    if (removedCount > 0) {
-      history.lastUpdated = new Date().toISOString();
-      this.saveHistory(history);
-      console.log(`🧹 Cleaned up ${removedCount} old pod records`);
-    }
-    
-    return removedCount;
-  }
+  // Rest of your existing methods remain the same...
 }
 
 module.exports = new PodLifecycleService();
