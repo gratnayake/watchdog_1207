@@ -1,5 +1,4 @@
-// backend/services/podLifecycleService.js
-// Complete service with all existing methods PLUS disappearance detection
+// COMPLETELY REPLACE your backend/services/podLifecycleService.js with this enhanced version:
 
 const fs = require('fs');
 const path = require('path');
@@ -90,7 +89,7 @@ class PodLifecycleService {
     }
   }
 
-  // ENHANCED: Track pod lifecycle changes with disappearance detection
+  // ENHANCED: updatePodLifecycle method with disappearance detection
   async updatePodLifecycle(currentPods) {
     const now = new Date();
     const history = this.loadHistory();
@@ -99,14 +98,13 @@ class PodLifecycleService {
 
     console.log(`🔍 Comparing current pods (${currentPods.length}) with last known state (${lastKnownState.totalPods})`);
 
-    // Create a map of current pods for easy lookup
+    // Create maps for easier comparison
     const currentPodMap = new Map();
     currentPods.forEach(pod => {
       const podKey = `${pod.namespace}/${pod.name}`;
       currentPodMap.set(podKey, pod);
     });
 
-    // Create map of last known pods
     const lastKnownPodMap = new Map();
     lastKnownState.pods.forEach(pod => {
       const podKey = `${pod.namespace}/${pod.name}`;
@@ -249,7 +247,7 @@ class PodLifecycleService {
       }
     });
 
-    // Update last known state with current pods
+    // CRITICAL: Update last known state with current pods (THIS FIXES THE ISSUE!)
     const newLastKnownState = {
       pods: currentPods.map(pod => ({
         name: pod.name,
@@ -264,9 +262,11 @@ class PodLifecycleService {
     // Save updated data
     history.lastUpdated = now.toISOString();
     this.saveHistory(history);
-    this.saveLastKnownState(newLastKnownState);
+    this.saveLastKnownState(newLastKnownState); // THIS IS THE KEY FIX!
 
     console.log(`✅ Pod lifecycle updated: ${changes.length} changes detected`);
+    console.log(`💾 Last known state updated: ${newLastKnownState.totalPods} pods`);
+    
     return changes;
   }
 

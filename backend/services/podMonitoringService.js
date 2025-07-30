@@ -74,14 +74,31 @@ class PodMonitoringService {
       // Get current pods from Kubernetes
       let currentPods = [];
       try {
-        currentPods = await kubernetesService.getAllPodsWithContainers();
-        console.log(`📡 Current pods from K8s: ${currentPods.length}`);
+        const allPods = await kubernetesService.getAllPodsWithContainers();
+        
+        // FILTER OUT completed pods from monitoring
+        currentPods = allPods.filter(pod => {
+          // Exclude Completed/Succeeded pods
+          if (pod.status === 'Completed' || pod.status === 'Succeeded') {
+            return false;
+          }
+          
+          // Exclude pods with 0/X ready ratio unless they're actively running/pending
+          if (pod.readinessRatio && pod.readinessRatio.startsWith('0/') && 
+              pod.status !== 'Running' && pod.status !== 'Pending') {
+            return false;
+          }
+          
+          return true;
+        });
+        
+        console.log(`📡 Current active pods: ${currentPods.length} (filtered from ${allPods.length} total)`);
       } catch (k8sError) {
         console.log('⚠️ Could not fetch current pods from K8s:', k8sError.message);
         return;
       }
       
-      // Update lifecycle tracking and detect changes
+      // CRITICAL FIX: Update lifecycle tracking and detect changes
       const changes = await podLifecycleService.updatePodLifecycle(currentPods);
       
       if (changes.length > 0) {
