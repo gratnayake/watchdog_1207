@@ -17,6 +17,8 @@ const kubernetesMonitoringService = require('./services/kubernetesMonitoringServ
 const podLifecycleService = require('./services/podLifecycleService');
 const scriptService = require('./services/scriptService');
 const systemHeartbeatService = require('./services/systemHeartbeatService');
+const podMonitoringService = require('./services/podMonitoringService');
+
 
 
 const { exec } = require('child_process');
@@ -3124,6 +3126,65 @@ app.get('/api/kubernetes/debug/email-config', (req, res) => {
     });
   }
 });
+
+app.get('/api/kubernetes/pod-monitoring/status', (req, res) => {
+  try {
+    const status = podMonitoringService.getStatus();
+    res.json({
+      success: true,
+      status: status
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+app.post('/api/kubernetes/pod-monitoring/start', (req, res) => {
+  try {
+    const started = podMonitoringService.startMonitoring();
+    if (started) {
+      res.json({
+        success: true,
+        message: 'Pod monitoring started successfully'
+      });
+    } else {
+      res.status(400).json({
+        success: false,
+        error: 'Failed to start pod monitoring (already running or not configured)'
+      });
+    }
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+app.post('/api/kubernetes/pod-monitoring/stop', (req, res) => {
+  try {
+    const stopped = podMonitoringService.stopMonitoring();
+    if (stopped) {
+      res.json({
+        success: true,
+        message: 'Pod monitoring stopped successfully'
+      });
+    } else {
+      res.status(400).json({
+        success: false,
+        error: 'Pod monitoring was not running'
+      });
+    }
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error('💥 Unhandled error:', err);
@@ -3166,26 +3227,26 @@ setTimeout(() => {
   }
 }, 2000); // Wait 2 seconds for services to initialize
 
-
-// Auto-start Kubernetes monitoring if configured
 setTimeout(() => {
   try {
     const kubeConfig = kubernetesConfigService.getConfig();
-    if (kubeConfig.isConfigured && kubeConfig.emailGroupId) {
-      console.log('🔄 Auto-starting Kubernetes monitoring...');
-      const started = kubernetesMonitoringService.startMonitoring();
+    if (kubeConfig.isConfigured) {
+      console.log('🔄 Auto-starting pod monitoring...');
+      const started = podMonitoringService.startMonitoring();
       if (started) {
-        console.log('✅ Kubernetes monitoring started automatically');
+        console.log('✅ Pod monitoring started automatically');
       } else {
-        console.log('⚠️ Kubernetes monitoring failed to start automatically');
+        console.log('⚠️ Pod monitoring failed to start automatically');
       }
     } else {
-      console.log('⚠️ Kubernetes monitoring not started - configuration incomplete');
+      console.log('⚠️ Pod monitoring not started - Kubernetes not configured');
     }
   } catch (error) {
-    console.error('❌ Failed to auto-start Kubernetes monitoring:', error);
+    console.error('❌ Failed to auto-start pod monitoring:', error);
   }
-}, 4000); 
+}, 5000); 
+
+
 
 
 setTimeout(() => {
