@@ -94,7 +94,6 @@ const loadEnhancedPods = async () => {
   try {
     setLoading(true);
     
-    // SIMPLIFIED: Always exclude deleted pods, always get all namespaces
     const apiUrl = `/api/kubernetes/pods/enhanced?namespace=all&includeDeleted=false&sortBy=${sortBy}`;
     console.log('🔍 Making API call to:', apiUrl);
     
@@ -104,6 +103,7 @@ const loadEnhancedPods = async () => {
     console.log('📡 API Response:', data);
     console.log('📦 Pods data:', data.data?.pods);
     console.log('📊 Statistics:', data.data?.statistics);
+    console.log('🔔 Changes/Alerts:', data.data?.changes);
     
     if (data.success) {
       const podsData = data.data.pods || [];
@@ -113,24 +113,43 @@ const loadEnhancedPods = async () => {
       setStatistics(data.data.statistics);
       setChanges(data.data.changes || []);
       
-      // Show notifications only for active pod changes (no deletions)
+      // ENHANCED: Handle different types of alerts
       if (data.data.changes && data.data.changes.length > 0) {
         data.data.changes.forEach(change => {
           if (change.type === 'created') {
             message.success(`New pod created: ${change.pod.namespace}/${change.pod.name}`, 3);
           } else if (change.type === 'status_change' && change.newStatus === 'Failed') {
             message.error(`Pod failed: ${change.pod.namespace}/${change.pod.name}`, 5);
+          } else if (change.type === 'namespace_stopped') {
+            // SPECIAL ALERT for stop operations
+            message.warning({
+              content: (
+                <div>
+                  <div style={{ fontWeight: 'bold', marginBottom: '4px' }}>
+                    🛑 Namespace Stopped: {change.namespace}
+                  </div>
+                  <div style={{ fontSize: '12px' }}>
+                    {change.podCount} pods have been stopped/scaled down
+                  </div>
+                  <div style={{ fontSize: '11px', opacity: 0.8, marginTop: '2px' }}>
+                    {change.pods.slice(0, 3).map(p => p.name).join(', ')}
+                    {change.pods.length > 3 && ` and ${change.pods.length - 3} more...`}
+                  </div>
+                </div>
+              ),
+              duration: 8, // Show longer for stop alerts
+              key: `stop-${change.namespace}` // Prevent duplicates
+            });
+            
+            console.log(`🛑 Stop alert: ${change.podCount} pods stopped in ${change.namespace}`);
           }
-          // No deleted pod notifications since we don't track them
         });
       }
       
-      // Show what we actually set
       console.log('📋 Active pods being displayed:', podsData.slice(0, 5).map(p => ({
         name: p.name,
         namespace: p.namespace,
-        status: p.status,
-        isDeleted: p.isDeleted || false
+        status: p.status
       })));
       
     } else {
@@ -521,6 +540,19 @@ const loadEnhancedPods = async () => {
                       <span> ({change.oldStatus} → {change.newStatus})</span>
                     </Text>
                   )}
+                  {/* NEW: Handle stop operations */}
+                  {change.type === 'namespace_stopped' && (
+                    <Text>
+                      <Badge status="error" style={{ marginRight: 8 }} />
+                      <Text strong style={{ color: '#ff4d4f' }}>
+                        🛑 {change.podCount} pods stopped in '{change.namespace}'
+                      </Text>
+                      <div style={{ fontSize: '11px', marginLeft: 16, opacity: 0.8 }}>
+                        {change.pods.slice(0, 3).map(p => p.name).join(', ')}
+                        {change.pods.length > 3 && ` and ${change.pods.length - 3} more...`}
+                      </div>
+                    </Text>
+                  )}
                 </div>
               ))}
               {changes.length > 3 && (
@@ -528,7 +560,7 @@ const loadEnhancedPods = async () => {
               )}
             </div>
           }
-          type="info"
+          type={changes.some(c => c.type === 'namespace_stopped') ? "warning" : "info"}
           closable
           style={{ marginBottom: 16 }}
         />

@@ -2099,14 +2099,13 @@ app.get('/api/kubernetes/pods/enhanced', async (req, res) => {
   try {
     const { 
       namespace = 'all', 
-      // REMOVED: includeDeleted parameter - we never want deleted pods
       maxAge,
       sortBy = 'lastSeen'
     } = req.query;
     
     console.log('🔍 Enhanced pods request params:', {
       namespace,
-      includeDeleted: false, // Always false
+      includeDeleted: false,
       maxAge,
       sortBy
     });
@@ -2121,14 +2120,8 @@ app.get('/api/kubernetes/pods/enhanced', async (req, res) => {
         currentPods = await kubernetesService.getPods(namespace);
       }
       console.log(`📡 Current pods from K8s: ${currentPods.length}`);
-      console.log('📋 Sample current pods:', currentPods.slice(0, 3).map(p => ({
-        name: p.name,
-        namespace: p.namespace,
-        status: p.status
-      })));
     } catch (k8sError) {
       console.log('⚠️ Could not fetch current pods from K8s:', k8sError.message);
-      // Continue with lifecycle service data only
     }
     
     // Update lifecycle tracking with current pods
@@ -2136,19 +2129,60 @@ app.get('/api/kubernetes/pods/enhanced', async (req, res) => {
     const changes = await podLifecycleService.updatePodLifecycle(currentPods);
     console.log(`🔄 Lifecycle changes detected: ${changes.length}`);
     
-    // SIMPLIFIED: Since we only want current/active pods, let's prioritize current K8s data
+    // ENHANCED: Detect if pods were stopped/scaled down (multiple pods deleted at once)
+    const deletedChanges = changes.filter(change => change.type === 'deleted');
+    let stopAlerts = [];
+    
+    if (deletedChanges.length > 0) {
+      // Group deleted pods by namespace and time to detect bulk operations
+      const now = new Date();
+      const recentDeletions = deletedChanges.filter(change => {
+        const deletedAt = new Date(change.pod.deletedAt || now);
+        const timeDiff = now - deletedAt;
+        return timeDiff < 60000; // Within last 60 seconds
+      });
+      
+      if (recentDeletions.length >= 3) {
+        // Multiple pods deleted recently - likely a stop/scale operation
+        const namespaceGroups = {};
+        recentDeletions.forEach(change => {
+          const ns = change.pod.namespace;
+          if (!namespaceGroups[ns]) {
+            namespaceGroups[ns] = [];
+          }
+          namespaceGroups[ns].push(change.pod);
+        });
+        
+        // Create stop alerts for each namespace
+        Object.keys(namespaceGroups).forEach(ns => {
+          const pods = namespaceGroups[ns];
+          if (pods.length >= 3) {
+            stopAlerts.push({
+              type: 'namespace_stopped',
+              namespace: ns,
+              podCount: pods.length,
+              timestamp: now.toISOString(),
+              message: `${pods.length} pods stopped in namespace '${ns}'`,
+              pods: pods.map(p => ({ name: p.name, status: p.status }))
+            });
+          }
+        });
+        
+        console.log(`🛑 Detected ${stopAlerts.length} stop operations`);
+      }
+    }
+    
+    // Get current pods and enhance them
     let podsToReturn = [];
     
     if (currentPods.length > 0) {
       console.log('✅ Using current Kubernetes pod data directly');
       
-      // Use current pods and enhance them with lifecycle data if available
       podsToReturn = currentPods.map(currentPod => {
-        // Try to get lifecycle data for this pod
         let lifecycleData = null;
         try {
           const comprehensivePods = podLifecycleService.getComprehensivePodList({
-            includeDeleted: false, // Only non-deleted pods
+            includeDeleted: false,
             namespace: namespace === 'all' ? null : namespace,
             maxAge: maxAge ? parseInt(maxAge) : null,
             sortBy
@@ -2157,29 +2191,23 @@ app.get('/api/kubernetes/pods/enhanced', async (req, res) => {
           lifecycleData = comprehensivePods.find(lp => 
             lp.name === currentPod.name && 
             lp.namespace === currentPod.namespace &&
-            !lp.isDeleted // Make sure it's not deleted
+            !lp.isDeleted
           );
         } catch (error) {
           console.log('⚠️ Could not get lifecycle data:', error.message);
         }
         
-        // Merge current pod data with lifecycle data
         return {
-          // Use lifecycle data if available, otherwise create basic structure
           name: currentPod.name,
           namespace: currentPod.namespace,
           status: currentPod.status,
           node: currentPod.node || 'unknown',
           restarts: currentPod.restarts || 0,
           age: lifecycleData?.age || 'Unknown',
-          
-          // Always include current container info
           containers: currentPod.containers || [],
           readyContainers: currentPod.readyContainers || 0,
           totalContainers: currentPod.totalContainers || 1,
           readinessRatio: currentPod.readinessRatio || '0/1',
-          
-          // Lifecycle tracking info (if available)
           firstSeen: lifecycleData?.firstSeen || new Date().toISOString(),
           lastSeen: lifecycleData?.lastSeen || new Date().toISOString(),
           statusHistory: lifecycleData?.statusHistory || [{
@@ -2187,15 +2215,14 @@ app.get('/api/kubernetes/pods/enhanced', async (req, res) => {
             timestamp: new Date().toISOString(),
             event: 'discovered'
           }],
-          isDeleted: false, // Always false since we're only showing current pods
+          isDeleted: false,
         };
       });
     } else {
       console.log('⚠️ No current pods found from Kubernetes');
-      // Fallback to lifecycle service for active pods only
       try {
         const comprehensivePods = podLifecycleService.getComprehensivePodList({
-          includeDeleted: false, // Only non-deleted pods
+          includeDeleted: false,
           namespace: namespace === 'all' ? null : namespace,
           maxAge: maxAge ? parseInt(maxAge) : null,
           sortBy
@@ -2209,16 +2236,17 @@ app.get('/api/kubernetes/pods/enhanced', async (req, res) => {
       }
     }
     
-    // Get statistics (should only count active pods)
+    // Get statistics
     const stats = podLifecycleService.getPodStatistics(namespace === 'all' ? null : namespace);
     
+    // ENHANCED: Include both regular changes and stop alerts
+    const allChanges = [
+      ...changes.filter(change => change.type !== 'deleted'), // Regular changes (no individual deletions)
+      ...stopAlerts // Bulk stop operations
+    ];
+    
     console.log(`✅ Final pods to send: ${podsToReturn.length}`);
-    console.log('📋 Final sample pods:', podsToReturn.slice(0, 3).map(p => ({
-      name: p.name,
-      namespace: p.namespace,
-      status: p.status,
-      isDeleted: p.isDeleted
-    })));
+    console.log(`🔔 Total alerts to send: ${allChanges.length} (${stopAlerts.length} stop alerts)`);
     
     res.json({
       success: true,
@@ -2226,10 +2254,10 @@ app.get('/api/kubernetes/pods/enhanced', async (req, res) => {
         pods: podsToReturn,
         statistics: {
           ...stats,
-          deleted: 0, // Always 0 since we don't show deleted
-          recentlyDeleted: 0 // Always 0 since we don't show deleted
+          deleted: 0,
+          recentlyDeleted: 0
         },
-        changes: changes.filter(change => change.type !== 'deleted'), // Remove deleted notifications
+        changes: allChanges,
         timestamp: new Date()
       }
     });
