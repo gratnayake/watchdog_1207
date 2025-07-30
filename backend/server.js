@@ -1075,16 +1075,37 @@ app.post('/api/urls/check/:id', async (req, res) => {
 });
 
 
-// KUBERNETES CONFIG ROUTES
 app.get('/api/kubernetes/config', (req, res) => {
   try {
     const config = kubernetesConfigService.getPublicConfig();
-    res.json({ success: true, config });
+    
+    // Also get thresholds from threshold service
+    let thresholds = null;
+    try {
+      thresholds = thresholdService.getKubernetesThresholds();
+    } catch (error) {
+      console.log('⚠️ Could not load Kubernetes thresholds:', error.message);
+    }
+    
+    // Merge config with thresholds
+    const enrichedConfig = {
+      ...config,
+      thresholds: config.thresholds || thresholds // Use config thresholds or fallback to threshold service
+    };
+    
+    console.log('📖 Returning Kubernetes config:', {
+      hasKubeconfigPath: !!enrichedConfig.kubeconfigPath,
+      hasEmailGroup: !!enrichedConfig.emailGroupId,
+      hasThresholds: !!enrichedConfig.thresholds,
+      isConfigured: enrichedConfig.isConfigured
+    });
+    
+    res.json({ success: true, config: enrichedConfig });
   } catch (error) {
+    console.error('❌ Get Kubernetes config error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
-
 app.post('/api/kubernetes/config', (req, res) => {
   try {
     const { kubeconfigPath, emailGroupId, thresholds } = req.body;
@@ -1094,6 +1115,11 @@ app.post('/api/kubernetes/config', (req, res) => {
       emailGroupId: emailGroupId || 'none',
       hasThresholds: !!thresholds
     });
+
+    // Log thresholds for debugging
+    if (thresholds) {
+      console.log('🎯 Threshold settings received:', thresholds);
+    }
 
     // Validate kubeconfig path if provided and not empty
     if (kubeconfigPath && kubeconfigPath.trim() !== '') {
@@ -1114,30 +1140,39 @@ app.post('/api/kubernetes/config', (req, res) => {
     const configData = { 
       kubeconfigPath: kubeconfigPath || '',
       emailGroupId: emailGroupId || null,
-      thresholds: thresholds || null
+      thresholds: thresholds || null  // Add thresholds to config data
     };
     
     const saved = kubernetesConfigService.updateConfig(configData);
     
-    // Also save thresholds to threshold service if provided
+    // ALSO save thresholds to threshold service if provided
     if (thresholds && saved) {
-      thresholdService.updateKubernetesThresholds({
+      console.log('🎯 Saving thresholds to threshold service...');
+      const thresholdSaved = thresholdService.updateKubernetesThresholds({
         ...thresholds,
-        emailGroupId: emailGroupId
+        emailGroupId: emailGroupId || null
       });
-      console.log('✅ Kubernetes thresholds saved to threshold service');
+      
+      if (thresholdSaved) {
+        console.log('✅ Kubernetes thresholds saved to threshold service');
+      } else {
+        console.log('❌ Failed to save thresholds to threshold service');
+      }
     }
     
     if (saved) {
-      console.log('✅ Kubernetes config saved successfully with thresholds');
+      console.log('✅ Kubernetes config saved successfully');
       
       // Reinitialize Kubernetes service with new config
       kubernetesService.refreshConfiguration();
       
+      // Get the updated config (including thresholds)
+      const updatedConfig = kubernetesConfigService.getPublicConfig();
+      
       res.json({ 
         success: true, 
         message: 'Kubernetes configuration and thresholds saved successfully',
-        config: kubernetesConfigService.getPublicConfig()
+        config: updatedConfig
       });
     } else {
       res.status(500).json({ 

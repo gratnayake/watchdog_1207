@@ -1,5 +1,4 @@
-// backend/services/kubernetesConfigService.js
-// Complete file with all required imports and methods
+// Replace your backend/services/kubernetesConfigService.js with this enhanced version:
 
 const fs = require('fs');
 const path = require('path');
@@ -14,7 +13,8 @@ class KubernetesConfigService {
     if (!fs.existsSync(this.configFile)) {
       const defaultConfig = {
         kubeconfigPath: '',
-        emailGroupId: null,  // Add email group support
+        emailGroupId: null,
+        thresholds: null, // Add thresholds support
         isConfigured: false,
         lastUpdated: new Date().toISOString()
       };
@@ -31,7 +31,8 @@ class KubernetesConfigService {
       // Ensure all required fields exist
       const completeConfig = {
         kubeconfigPath: config.kubeconfigPath || '',
-        emailGroupId: config.emailGroupId || null,  // Add email group support
+        emailGroupId: config.emailGroupId || null,
+        thresholds: config.thresholds || null, // Include thresholds
         isConfigured: !!(config.kubeconfigPath && config.kubeconfigPath.trim()),
         lastUpdated: config.lastUpdated || new Date().toISOString()
       };
@@ -42,6 +43,7 @@ class KubernetesConfigService {
       return {
         kubeconfigPath: '',
         emailGroupId: null,
+        thresholds: null,
         isConfigured: false,
         lastUpdated: new Date().toISOString()
       };
@@ -55,9 +57,10 @@ class KubernetesConfigService {
         lastUpdated: new Date().toISOString()
       };
       fs.writeFileSync(this.configFile, JSON.stringify(configToSave, null, 2));
-      console.log('💾 Kubernetes config saved with email group:', {
+      console.log('💾 Kubernetes config saved:', {
         kubeconfigPath: configToSave.kubeconfigPath || 'empty',
         emailGroupId: configToSave.emailGroupId || 'none',
+        hasThresholds: !!configToSave.thresholds,
         isConfigured: configToSave.isConfigured
       });
       return true;
@@ -75,6 +78,12 @@ class KubernetesConfigService {
       isConfigured: !!(newConfig.kubeconfigPath && newConfig.kubeconfigPath.trim())      
     };
     
+    console.log('🔄 Updating Kubernetes config:', {
+      old: currentConfig,
+      new: newConfig,
+      merged: updatedConfig
+    });
+    
     return this.saveConfig(updatedConfig);
   }
 
@@ -86,13 +95,14 @@ class KubernetesConfigService {
     const config = this.loadConfig();
     return {
       kubeconfigPath: config.kubeconfigPath,
-      emailGroupId: config.emailGroupId,  // Include email group in public config
+      emailGroupId: config.emailGroupId,
+      thresholds: config.thresholds, // Include thresholds in public config
       isConfigured: config.isConfigured,
       lastUpdated: config.lastUpdated
     };
   }
 
-  // Add these missing methods for email group support
+  // Email group support methods
   getEmailGroupForAlerts() {
     const config = this.getConfig();
     return config.emailGroupId || null;
@@ -107,6 +117,7 @@ class KubernetesConfigService {
     const emptyConfig = {
       kubeconfigPath: '',
       emailGroupId: null,
+      thresholds: null,
       isConfigured: false
     };
     return this.saveConfig(emptyConfig);
