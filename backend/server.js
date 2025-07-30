@@ -2098,106 +2098,138 @@ app.get('/api/kubernetes/pods/:namespace/:podName/containers', async (req, res) 
 app.get('/api/kubernetes/pods/enhanced', async (req, res) => {
   try {
     const { 
-      namespace = 'default', 
+      namespace = 'all', 
+      // REMOVED: includeDeleted parameter - we never want deleted pods
       maxAge,
       sortBy = 'lastSeen'
     } = req.query;
     
-    console.log(`🔍 Enhanced pods request: namespace=${namespace}`);
+    console.log('🔍 Enhanced pods request params:', {
+      namespace,
+      includeDeleted: false, // Always false
+      maxAge,
+      sortBy
+    });
     
+    // Get current pods from Kubernetes with container details
     let currentPods = [];
     try {
+      console.log('📡 Fetching current pods from Kubernetes...');
       if (namespace === 'all') {
         currentPods = await kubernetesService.getAllPodsWithContainers();
       } else {
         currentPods = await kubernetesService.getPods(namespace);
       }
-      
-      const filteredCurrentPods = currentPods.filter(pod => {
-               
-        // Check if pod's READY status is complete
-        const isReadyComplete = isPodReadyComplete(pod);
-        
-        if (!isReadyComplete) {
-          console.log(`🔍 Filtering out pod with incomplete READY status: ${pod.namespace}/${pod.name} (Ready: ${getPodReadyString(pod)}, Status: ${pod.status})`);
-          return false;
-        }
-        
-        return true;
-      });
-      
-      console.log(`📊 Filtered ${currentPods.length - filteredCurrentPods.length} pods with incomplete READY status`);
-      currentPods = filteredCurrentPods;
-      
+      console.log(`📡 Current pods from K8s: ${currentPods.length}`);
+      console.log('📋 Sample current pods:', currentPods.slice(0, 3).map(p => ({
+        name: p.name,
+        namespace: p.namespace,
+        status: p.status
+      })));
     } catch (k8sError) {
       console.log('⚠️ Could not fetch current pods from K8s:', k8sError.message);
+      // Continue with lifecycle service data only
     }
     
-    // Update lifecycle tracking with FILTERED current pods
+    // Update lifecycle tracking with current pods
+    console.log('🔄 Updating pod lifecycle...');
     const changes = await podLifecycleService.updatePodLifecycle(currentPods);
+    console.log(`🔄 Lifecycle changes detected: ${changes.length}`);
     
-    // Get comprehensive pod list including historical data
-    let comprehensivePods = podLifecycleService.getComprehensivePodList({
-      namespace: namespace === 'all' ? null : namespace,
-      maxAge: maxAge ? parseInt(maxAge) : null,
-      sortBy
-    });
+    // SIMPLIFIED: Since we only want current/active pods, let's prioritize current K8s data
+    let podsToReturn = [];
     
-    comprehensivePods = comprehensivePods.filter(pod => {
-      if (pod.isDeleted ) {
-        return true;
-      }
+    if (currentPods.length > 0) {
+      console.log('✅ Using current Kubernetes pod data directly');
       
-      // For non-deleted pods, check if READY status is complete
-      if (!pod.isDeleted) {
-        const isReadyComplete = isPodReadyComplete(pod);
-        if (!isReadyComplete) {
-          console.log(`🔍 Filtering out comprehensive pod with incomplete READY: ${pod.namespace}/${pod.name}`);
-          return false;
+      // Use current pods and enhance them with lifecycle data if available
+      podsToReturn = currentPods.map(currentPod => {
+        // Try to get lifecycle data for this pod
+        let lifecycleData = null;
+        try {
+          const comprehensivePods = podLifecycleService.getComprehensivePodList({
+            includeDeleted: false, // Only non-deleted pods
+            namespace: namespace === 'all' ? null : namespace,
+            maxAge: maxAge ? parseInt(maxAge) : null,
+            sortBy
+          });
+          
+          lifecycleData = comprehensivePods.find(lp => 
+            lp.name === currentPod.name && 
+            lp.namespace === currentPod.namespace &&
+            !lp.isDeleted // Make sure it's not deleted
+          );
+        } catch (error) {
+          console.log('⚠️ Could not get lifecycle data:', error.message);
         }
-      }
-      
-      return true;
-    });
-    
-    // Merge current pod data (with container info) with lifecycle data
-    const enrichedPods = comprehensivePods.map(lifecyclePod => {
-      const currentPod = currentPods.find(cp => 
-        cp.name === lifecyclePod.name && cp.namespace === lifecyclePod.namespace
-      );
-      
-      if (currentPod) {
+        
         // Merge current pod data with lifecycle data
         return {
-          ...lifecyclePod,
-          containers: currentPod.containers,
-          readyContainers: currentPod.readyContainers,
-          totalContainers: currentPod.totalContainers,
-          readinessRatio: currentPod.readinessRatio
+          // Use lifecycle data if available, otherwise create basic structure
+          name: currentPod.name,
+          namespace: currentPod.namespace,
+          status: currentPod.status,
+          node: currentPod.node || 'unknown',
+          restarts: currentPod.restarts || 0,
+          age: lifecycleData?.age || 'Unknown',
+          
+          // Always include current container info
+          containers: currentPod.containers || [],
+          readyContainers: currentPod.readyContainers || 0,
+          totalContainers: currentPod.totalContainers || 1,
+          readinessRatio: currentPod.readinessRatio || '0/1',
+          
+          // Lifecycle tracking info (if available)
+          firstSeen: lifecycleData?.firstSeen || new Date().toISOString(),
+          lastSeen: lifecycleData?.lastSeen || new Date().toISOString(),
+          statusHistory: lifecycleData?.statusHistory || [{
+            status: currentPod.status,
+            timestamp: new Date().toISOString(),
+            event: 'discovered'
+          }],
+          isDeleted: false, // Always false since we're only showing current pods
         };
+      });
+    } else {
+      console.log('⚠️ No current pods found from Kubernetes');
+      // Fallback to lifecycle service for active pods only
+      try {
+        const comprehensivePods = podLifecycleService.getComprehensivePodList({
+          includeDeleted: false, // Only non-deleted pods
+          namespace: namespace === 'all' ? null : namespace,
+          maxAge: maxAge ? parseInt(maxAge) : null,
+          sortBy
+        });
+        
+        podsToReturn = comprehensivePods.filter(pod => !pod.isDeleted);
+        console.log(`📚 Using ${podsToReturn.length} active pods from lifecycle service`);
+      } catch (error) {
+        console.log('❌ Could not get pods from lifecycle service:', error.message);
+        podsToReturn = [];
       }
-      
-      // For deleted pods or when current data is not available
-      return {
-        ...lifecyclePod,
-        containers: [],
-        readyContainers: 0,
-        totalContainers: 1,
-        readinessRatio: lifecyclePod.isDeleted ? '0/1' : '0/1'
-      };
-    });
+    }
     
-    // Get statistics
+    // Get statistics (should only count active pods)
     const stats = podLifecycleService.getPodStatistics(namespace === 'all' ? null : namespace);
     
-    console.log(`✅ Enhanced pods response: ${enrichedPods.length} pods (incomplete READY pods filtered out)`);
+    console.log(`✅ Final pods to send: ${podsToReturn.length}`);
+    console.log('📋 Final sample pods:', podsToReturn.slice(0, 3).map(p => ({
+      name: p.name,
+      namespace: p.namespace,
+      status: p.status,
+      isDeleted: p.isDeleted
+    })));
     
     res.json({
       success: true,
       data: {
-        pods: enrichedPods,
-        statistics: stats,
-        changes: changes,
+        pods: podsToReturn,
+        statistics: {
+          ...stats,
+          deleted: 0, // Always 0 since we don't show deleted
+          recentlyDeleted: 0 // Always 0 since we don't show deleted
+        },
+        changes: changes.filter(change => change.type !== 'deleted'), // Remove deleted notifications
         timestamp: new Date()
       }
     });

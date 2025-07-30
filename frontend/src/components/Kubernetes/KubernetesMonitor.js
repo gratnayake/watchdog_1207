@@ -90,41 +90,60 @@ const EnhancedKubernetesMonitor = () => {
     loadEnhancedPods();
   };
 
-  const loadEnhancedPods = async () => {
-    try {
-      setLoading(true);
+const loadEnhancedPods = async () => {
+  try {
+    setLoading(true);
+    
+    // SIMPLIFIED: Always exclude deleted pods, always get all namespaces
+    const apiUrl = `/api/kubernetes/pods/enhanced?namespace=all&includeDeleted=false&sortBy=${sortBy}`;
+    console.log('🔍 Making API call to:', apiUrl);
+    
+    const response = await fetch(apiUrl);
+    const data = await response.json();
+    
+    console.log('📡 API Response:', data);
+    console.log('📦 Pods data:', data.data?.pods);
+    console.log('📊 Statistics:', data.data?.statistics);
+    
+    if (data.success) {
+      const podsData = data.data.pods || [];
+      console.log(`✅ Setting ${podsData.length} active pods to state`);
       
-      // SIMPLIFIED: Always get all namespaces, never include deleted pods
-      const response = await fetch(`/api/kubernetes/pods/enhanced?namespace=all&includeDeleted=false&sortBy=${sortBy}`);
-      const data = await response.json();
+      setPods(podsData);
+      setStatistics(data.data.statistics);
+      setChanges(data.data.changes || []);
       
-      console.log('🔍 API Response:', data);
-      console.log('📦 Pods count:', data.data?.pods?.length || 0);
-      
-      if (data.success) {
-        setPods(data.data.pods || []);
-        setStatistics(data.data.statistics);
-        setChanges(data.data.changes || []);
-        
-        // Show notifications for important changes (not deletions)
-        if (data.data.changes && data.data.changes.length > 0) {
-          data.data.changes.forEach(change => {
-            if (change.type === 'created') {
-              message.success(`New pod created: ${change.pod.namespace}/${change.pod.name}`, 3);
-            } else if (change.type === 'status_change' && change.newStatus === 'Failed') {
-              message.error(`Pod failed: ${change.pod.namespace}/${change.pod.name}`, 5);
-            }
-            // REMOVED: deleted pod notifications
-          });
-        }
+      // Show notifications only for active pod changes (no deletions)
+      if (data.data.changes && data.data.changes.length > 0) {
+        data.data.changes.forEach(change => {
+          if (change.type === 'created') {
+            message.success(`New pod created: ${change.pod.namespace}/${change.pod.name}`, 3);
+          } else if (change.type === 'status_change' && change.newStatus === 'Failed') {
+            message.error(`Pod failed: ${change.pod.namespace}/${change.pod.name}`, 5);
+          }
+          // No deleted pod notifications since we don't track them
+        });
       }
-    } catch (error) {
-      console.error('Failed to load enhanced pods:', error);
-      message.error('Failed to load pod data');
-    } finally {
-      setLoading(false);
+      
+      // Show what we actually set
+      console.log('📋 Active pods being displayed:', podsData.slice(0, 5).map(p => ({
+        name: p.name,
+        namespace: p.namespace,
+        status: p.status,
+        isDeleted: p.isDeleted || false
+      })));
+      
+    } else {
+      console.error('❌ API returned success: false', data);
+      message.error(`Failed to load pods: ${data.error || 'Unknown error'}`);
     }
-  };
+  } catch (error) {
+    console.error('❌ API call failed:', error);
+    message.error('Failed to load pod data');
+  } finally {
+    setLoading(false);
+  }
+};
 
   const handleViewHistory = async (pod) => {
     try {
