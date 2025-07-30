@@ -21,7 +21,7 @@ import {
 import { 
   SettingOutlined, 
   FolderOpenOutlined, 
-  TestTubeOutlined,
+  ExperimentOutlined,
   SaveOutlined,
   ClearOutlined,
   ExclamationCircleOutlined,
@@ -429,7 +429,7 @@ const KubernetesConfig = () => {
               </Button>
               
               <Button 
-                icon={<TestTubeOutlined />}
+                icon={<ExperimentOutlined />}
                 onClick={handleTestConfig}
                 loading={testLoading}
               >

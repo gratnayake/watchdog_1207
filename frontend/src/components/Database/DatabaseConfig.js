@@ -21,7 +21,7 @@ import {
 import { 
   DatabaseOutlined, 
   SaveOutlined, 
-  TestTubeOutlined,
+  ExperimentOutlined,
   BellOutlined,
   ExclamationCircleOutlined,
   WarningOutlined,
@@ -517,7 +517,7 @@ const DatabaseConfig = () => {
               </Button>
               
               <Button 
-                icon={<TestTubeOutlined />}
+                icon={<ExperimentOutlined />}
                 onClick={handleTestConnection}
                 loading={testLoading}
               >
