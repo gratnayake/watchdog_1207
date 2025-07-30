@@ -18,7 +18,7 @@ const podLifecycleService = require('./services/podLifecycleService');
 const scriptService = require('./services/scriptService');
 const systemHeartbeatService = require('./services/systemHeartbeatService');
 const podMonitoringService = require('./services/podMonitoringService');
-
+const podRecoveryNotifier = require('./services/podRecoveryNotifier');
 
 
 const { exec } = require('child_process');
@@ -3177,6 +3177,28 @@ app.post('/api/kubernetes/pod-monitoring/start', (req, res) => {
   }
 });
 
+app.post('/api/kubernetes/check-pod-recovery', async (req, res) => {
+  try {
+    console.log('🔍 Manual pod recovery check requested');
+    
+    // Run the recovery check
+    await podRecoveryNotifier.checkAndNotifyRecovery();
+    
+    res.json({
+      success: true,
+      message: 'Pod recovery check completed',
+      timestamp: new Date()
+    });
+    
+  } catch (error) {
+    console.error('❌ Pod recovery check error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 app.post('/api/kubernetes/pod-monitoring/stop', (req, res) => {
   try {
     const stopped = podMonitoringService.stopMonitoring();
@@ -3198,6 +3220,69 @@ app.post('/api/kubernetes/pod-monitoring/stop', (req, res) => {
     });
   }
 });
+
+
+app.get('/api/kubernetes/pod-recovery/status', (req, res) => {
+  res.json({
+    success: true,
+    isWatching: podRecoveryNotifier.isWatching,
+    config: {
+      lastKnownPodsFile: podRecoveryNotifier.lastKnownPodsFile,
+      dataDir: podRecoveryNotifier.dataDir
+    }
+  });
+});
+
+app.post('/api/kubernetes/pod-recovery/start', (req, res) => {
+  try {
+    podRecoveryNotifier.startWatching();
+    res.json({
+      success: true,
+      message: 'Pod recovery notifier started'
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+app.post('/api/kubernetes/pod-recovery/stop', (req, res) => {
+  try {
+    podRecoveryNotifier.stopWatching();
+    res.json({
+      success: true,
+      message: 'Pod recovery notifier stopped'
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Manual trigger for testing
+app.post('/api/kubernetes/pod-recovery/check', async (req, res) => {
+  try {
+    console.log('🔍 Manual pod recovery check requested');
+    await podRecoveryNotifier.checkAndNotifyRecovery();
+    res.json({
+      success: true,
+      message: 'Pod recovery check completed',
+      timestamp: new Date()
+    });
+  } catch (error) {
+    console.error('❌ Pod recovery check error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error('💥 Unhandled error:', err);
@@ -3223,6 +3308,16 @@ setTimeout(() => {
   console.log(`✅ Started monitoring ${started} URLs`);
 }, 3000);
 
+setTimeout(() => {
+  const kubernetesConfig = kubernetesConfigService.getConfig();
+  if (kubernetesConfig.isConfigured && kubernetesConfig.emailGroupId) {
+    console.log('🔍 Starting pod recovery notifier...');
+    podRecoveryNotifier.startWatching();
+    console.log('✅ Pod recovery notifier started - watching last-known-pods.json');
+  } else {
+    console.log('⚠️ Pod recovery notifier not started - Kubernetes not configured or no email group set');
+  }
+}, 5000);
 
 // Auto-start monitoring if database is configured
 setTimeout(() => {
@@ -3259,7 +3354,13 @@ setTimeout(() => {
   }
 }, 5000); 
 
-
+setInterval(async () => {
+  try {
+    await podRecoveryNotifier.checkAndNotifyRecovery();
+  } catch (error) {
+    console.error('Error in automatic pod recovery check:', error);
+  }
+}, 60000); // Check every 60 seconds
 
 
 setTimeout(() => {
@@ -3278,8 +3379,6 @@ setTimeout(() => {
 }, 6000);
 
 
-
-// Start server
 app.listen(PORT, () => {
   console.log(`🚀 UPTIME WATCHDOG by Tsunami Solutions running on http://localhost:${PORT}`);
   console.log(`📊 Real Oracle database monitoring enabled`);
