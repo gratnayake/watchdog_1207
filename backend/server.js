@@ -2284,7 +2284,20 @@ app.get('/api/kubernetes/pods/enhanced', async (req, res) => {
     if (currentPods.length > 0) {
       console.log('✅ Using current Kubernetes pod data directly');
       
-      podsToReturn = currentPods.map(currentPod => {
+      podsToReturn = currentPods.filter(currentPod => {
+      if (currentPod.status === 'Completed' || currentPod.status === 'Succeeded') {
+        console.log(`🚫 Filtering out completed pod: ${currentPod.namespace}/${currentPod.name} (${currentPod.status})`);
+        return false;
+      }
+      
+      if (currentPod.readinessRatio && currentPod.readinessRatio.startsWith('0/') && 
+          currentPod.status !== 'Running' && currentPod.status !== 'Pending') {
+        console.log(`🚫 Filtering out non-ready pod: ${currentPod.namespace}/${currentPod.name} (${currentPod.readinessRatio}, ${currentPod.status})`);
+        return false;
+      }
+      
+      return true; // Keep all other pods
+    }).map(currentPod => {
         let lifecycleData = null;
         try {
           const comprehensivePods = podLifecycleService.getComprehensivePodList({
