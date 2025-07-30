@@ -226,22 +226,32 @@ app.delete('/api/users/:id', (req, res) => {
 app.get('/api/database/config', (req, res) => {
   try {
     const config = dbConfigService.getPublicConfig();
-    console.log('📄 Sending database config (with email group):', {
-      isConfigured: config.isConfigured,
-      host: config.host,
-      emailGroupId: config.emailGroupId
+    
+    // Also get thresholds from threshold service
+    let thresholds = null;
+    try {
+      thresholds = thresholdService.getDatabaseThresholds();
+    } catch (error) {
+      console.log('⚠️ Could not load database thresholds:', error.message);
+    }
+    
+    // Merge config with thresholds
+    const enrichedConfig = {
+      ...config,
+      thresholds: thresholds // Add thresholds to config
+    };
+    
+    console.log('📖 Returning database config:', {
+      hasHost: !!enrichedConfig.host,
+      hasEmailGroup: !!enrichedConfig.emailGroupId,
+      hasThresholds: !!enrichedConfig.thresholds,
+      isConfigured: enrichedConfig.isConfigured
     });
     
-    res.json({ 
-      success: true, 
-      config: config 
-    });
+    res.json({ success: true, config: enrichedConfig });
   } catch (error) {
     console.error('❌ Get database config error:', error);
-    res.status(500).json({ 
-      success: false,
-      error: error.message 
-    });
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
@@ -274,35 +284,49 @@ app.post('/api/database/config', (req, res) => {
       hasThresholds: !!thresholds
     });
 
-    // Prepare config data including thresholds
+    // Log thresholds for debugging
+    if (thresholds) {
+      console.log('🎯 Database threshold settings received:', thresholds);
+    }
+
+    // Prepare config data
     const configData = { 
       host: host || '',
       port: port || 1521,
       serviceName: serviceName || '',
       username: username || '',
       password: password || '',
-      emailGroupId: emailGroupId || null,
-      thresholds: thresholds || null
+      emailGroupId: emailGroupId || null
     };
     
-    const saved = databaseConfigService.updateConfig(configData);
+    // Save database config using the correct service
+    const saved = dbConfigService.updateConfig(configData);
     
-    // Also save thresholds to threshold service if provided
+    // ALSO save thresholds to threshold service if provided
     if (thresholds && saved) {
-      thresholdService.updateDatabaseThresholds({
+      console.log('🎯 Saving database thresholds to threshold service...');
+      const thresholdSaved = thresholdService.updateDatabaseThresholds({
         ...thresholds,
-        emailGroupId: emailGroupId
+        emailGroupId: emailGroupId || null
       });
-      console.log('✅ Database thresholds saved to threshold service');
+      
+      if (thresholdSaved) {
+        console.log('✅ Database thresholds saved to threshold service');
+      } else {
+        console.log('❌ Failed to save thresholds to threshold service');
+      }
     }
     
     if (saved) {
-      console.log('✅ Database config saved successfully with thresholds');
+      console.log('✅ Database config saved successfully');
+      
+      // Get the updated config
+      const updatedConfig = dbConfigService.getPublicConfig();
       
       res.json({ 
         success: true, 
         message: 'Database configuration and thresholds saved successfully',
-        config: databaseConfigService.getPublicConfig()
+        config: updatedConfig
       });
     } else {
       res.status(500).json({ 
@@ -318,6 +342,7 @@ app.post('/api/database/config', (req, res) => {
     });
   }
 });
+
 
 app.post('/api/database/test-connection', async (req, res) => {
   try {
