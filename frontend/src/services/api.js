@@ -76,6 +76,25 @@ export const userAPI = {
 
 // Database API functions
 export const databaseAPI = {
+  // Get database configuration
+  getConfig: async () => {
+    const response = await api.get('/api/database/config');
+    return response.data;
+  },
+
+  // ENHANCED: Save config with thresholds
+  saveConfig: async (configData) => {
+    const response = await api.post('/api/database/config', configData);
+    return response.data;
+  },
+
+  // Use existing test connection endpoint
+  testConnection: async (configData) => {
+    const response = await api.post('/api/database/test-connection', configData);
+    return response.data;
+  },
+
+  // Add other existing database methods here...
   getStatus: async () => {
     const response = await api.get('/api/database/status');
     return response.data;
@@ -84,34 +103,9 @@ export const databaseAPI = {
   getDashboard: async () => {
     const response = await api.get('/api/database/dashboard');
     return response.data;
-  },
-
-  getTablespace: async () => {
-    const response = await api.get('/api/database/tablespace');
-    return response.data;
-  },
-
-  getInfo: async () => {
-    const response = await api.get('/api/database/info');
-    return response.data;
-  },
-
-  // Configuration functions
-  getConfig: async () => {
-    const response = await api.get('/api/database/config');
-    return response.data;
-  },
-
-  saveConfig: async (configData) => {
-    const response = await api.post('/api/database/config', configData);
-    return response.data;
-  },
-
-  testConnection: async (connectionData) => {
-    const response = await api.post('/api/database/test-connection', connectionData);
-    return response.data;
   }
 };
+
 
 // NEW: Monitoring API functions
 export const monitoringAPI = {
@@ -251,6 +245,23 @@ export const urlAPI = {
 
 // Add this export with your other APIs
 export const kubernetesAPI = {
+  // Existing methods...
+  getConfig: async () => {
+    const response = await api.get('/api/kubernetes/config');
+    return response.data;
+  },
+
+  // ENHANCED: Save config with thresholds
+  saveConfig: async (configData) => {
+    const response = await api.post('/api/kubernetes/config', configData);
+    return response.data;
+  },
+
+  testConfig: async (configData) => {
+    const response = await api.post('/api/kubernetes/config/test', configData);
+    return response.data;
+  },
+
   getPods: async (namespace = 'default') => {
     const response = await api.get(`/api/kubernetes/pods?namespace=${namespace}`);
     return response.data;
@@ -275,22 +286,8 @@ export const kubernetesAPI = {
     const response = await api.get('/api/kubernetes/cluster-info');
     return response.data;
   },
-   getConfig: async () => {
-    const response = await api.get('/api/kubernetes/config');
-    return response.data;
-  },
 
-  saveConfig: async (configData) => {
-    const response = await api.post('/api/kubernetes/config', configData);
-    return response.data;
-  },
-
-  testConfig: async (configData) => {
-    const response = await api.post('/api/kubernetes/config/test', configData);
-    return response.data;
-  },
-
-restartPod: async (namespace, podName) => {
+  restartPod: async (namespace, podName) => {
     const response = await api.post(`/api/kubernetes/pods/${namespace}/${podName}/restart`);
     return response.data;
   },
@@ -341,68 +338,46 @@ restartPod: async (namespace, podName) => {
   getDeploymentInfo: async (namespace, podName) => {
     const response = await api.get(`/api/kubernetes/pods/${namespace}/${podName}/deployment`);
     return response.data;
-  },
-
-  getEnhancedPods: async (options = {}) => {
-    const {
-      namespace = 'all',
-      sortBy = 'lastSeen',
-      maxAge
-    } = options;
-
-    const params = new URLSearchParams({
-      namespace,
-      sortBy
-    });
-
-    if (maxAge) {
-      params.append('maxAge', maxAge.toString());
-    }
-
-    const response = await api.get(`/api/kubernetes/pods/enhanced?${params}`);
-    return response.data;
-  },
-
-  // Get pod lifecycle history
-  getPodHistory: async (namespace, podName) => {
-    const response = await api.get(`/api/kubernetes/pods/${namespace}/${podName}/history`);
-    return response.data;
-  },
-
-  // Get pod statistics and trends
-  getPodStatistics: async (options = {}) => {
-    const {
-      namespace = 'all',
-      timeRange = 24
-    } = options;
-
-    const params = new URLSearchParams({
-      namespace,
-      timeRange: timeRange.toString()
-    });
-
-    const response = await api.get(`/api/kubernetes/pods/statistics?${params}`);
-    return response.data;
-  },
-
-  // Cleanup old pod history
-  cleanupPodHistory: async (maxAgeDays = 30) => {
-    const response = await api.post('/api/kubernetes/pods/cleanup', {
-      maxAgeDays
-    });
-    return response.data;
-  },
-
+  }
 };
 
 export const thresholdAPI = {
+  // Existing database size threshold methods
   getDbSizeThreshold: async () => {
     const response = await api.get('/api/thresholds/db-size');
     return response.data;
   },
 
-  saveDbSizeThreshold: async (settings) => {
-    const response = await api.post('/api/thresholds/db-size', settings);
+  saveDbSizeThreshold: async (thresholdData) => {
+    const response = await api.post('/api/thresholds/db-size', thresholdData);
+    return response.data;
+  },
+
+  // NEW: Database monitoring thresholds
+  getDatabaseThresholds: async () => {
+    const response = await api.get('/api/thresholds/database');
+    return response.data;
+  },
+
+  saveDatabaseThresholds: async (thresholdData) => {
+    const response = await api.post('/api/thresholds/database', thresholdData);
+    return response.data;
+  },
+
+  // NEW: Kubernetes thresholds
+  getKubernetesThresholds: async () => {
+    const response = await api.get('/api/thresholds/kubernetes');
+    return response.data;
+  },
+
+  saveKubernetesThresholds: async (thresholdData) => {
+    const response = await api.post('/api/thresholds/kubernetes', thresholdData);
+    return response.data;
+  },
+
+  // Get all thresholds
+  getAllThresholds: async () => {
+    const response = await api.get('/api/thresholds/all');
     return response.data;
   }
 };
