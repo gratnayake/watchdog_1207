@@ -358,65 +358,126 @@ class DatabaseAutoRecoveryService {
     });
   }
 
-  // Restart the database (customized for your Oracle setup)
+  // Restart the database using SQL*Plus commands (same as manual operations)
   async restartDatabase() {
-    return new Promise((resolve) => {
-      console.log('🔄 Attempting to restart Oracle database...');
+    return new Promise(async (resolve) => {
+      console.log('🔄 Attempting to restart Oracle database using SQL*Plus commands...');
+      console.log('💡 Using same method as your manual database operations');
       
-      // Based on your system, the correct services are:
-      // - OracleServiceUATCDB (main database service)
-      // - OracleOraDB19Home1TNSListener (listener)
-      
-      console.log('🔧 Stopping Oracle services...');
-      
-      // First stop the database service, then the listener
-      const stopCommand = 'net stop OracleServiceUATCDB && net stop OracleOraDB19Home1TNSListener';
-      
-      exec(stopCommand, { timeout: 60000 }, (stopError, stopStdout, stopStderr) => {
-        console.log('📋 Oracle stop command output:');
-        console.log('STDOUT:', stopStdout);
-        console.log('STDERR:', stopStderr);
+      try {
+        const { exec } = require('child_process');
+        const path = require('path');
+        const fs = require('fs');
         
-        if (stopError) {
-          console.error(`❌ Oracle stop error: ${stopError.message}`);
+        // Get credentials from environment (same as manual operations)
+        const sysUsername = process.env.DB_RESTART_USERNAME || 'sys';
+        const sysPassword = process.env.DB_RESTART_PASSWORD;
+        
+        if (!sysPassword) {
+          console.error('❌ DB_RESTART_PASSWORD not found in environment variables');
+          resolve(false);
+          return;
         }
         
-        // Wait 5 seconds between stop and start
-        console.log('⏳ Waiting 5 seconds between stop and start...');
-        setTimeout(() => {
+        console.log(`🔧 Using SYS credentials: ${sysUsername}/***** `);
+        
+        // Step 1: SHUTDOWN IMMEDIATE using SQL*Plus
+        console.log('🛑 Step 1: SHUTDOWN IMMEDIATE via SQL*Plus');
+        
+        const tempDir = path.join(__dirname, '../temp');
+        if (!fs.existsSync(tempDir)) {
+          fs.mkdirSync(tempDir, { recursive: true });
+        }
+        
+        const shutdownScriptPath = path.join(tempDir, 'auto_shutdown.sql');
+        const shutdownScript = `CONNECT ${sysUsername}/${sysPassword} AS SYSDBA
+SHUTDOWN IMMEDIATE;
+EXIT;`;
+        
+        fs.writeFileSync(shutdownScriptPath, shutdownScript);
+        console.log('📝 Created shutdown script file');
+        
+        // Execute SHUTDOWN IMMEDIATE
+        const shutdownCommand = `sqlplus /nolog @"${shutdownScriptPath}"`;
+        console.log(`🔧 Executing: ${shutdownCommand}`);
+        
+        exec(shutdownCommand, { timeout: 60000 }, (shutdownError, shutdownStdout, shutdownStderr) => {
+          console.log('📋 SHUTDOWN output:', shutdownStdout);
           
-          console.log('🔧 Starting Oracle services...');
+          // Clean up shutdown script
+          try { fs.unlinkSync(shutdownScriptPath); } catch(e) {}
           
-          // Start listener first, then database service
-          const startCommand = 'net start OracleOraDB19Home1TNSListener && net start OracleServiceUATCDB';
+          if (shutdownError) {
+            console.error(`❌ SHUTDOWN error: ${shutdownError.message}`);
+          }
           
-          exec(startCommand, { timeout: 120000 }, (startError, startStdout, startStderr) => {
-            console.log('📋 Oracle start command output:');
-            console.log('STDOUT:', startStdout);
-            console.log('STDERR:', startStderr);
+          // Wait 10 seconds between shutdown and startup (same as manual)
+          console.log('⏳ Waiting 10 seconds between shutdown and startup...');
+          setTimeout(() => {
             
-            if (startError) {
-              console.error(`❌ Oracle start error: ${startError.message}`);
-              console.error(`❌ Error code: ${startError.code}`);
-              resolve(false);
-              return;
-            }
+            // Step 2: STARTUP using SQL*Plus
+            console.log('🚀 Step 2: STARTUP via SQL*Plus');
             
-            console.log('✅ Oracle database restart command completed successfully');
+            const startupScriptPath = path.join(tempDir, 'auto_startup.sql');
             
-            // Check if both services actually started
-            exec('net start | findstr Oracle', (listError, listStdout, listStderr) => {
-              if (listStdout) {
-                console.log('📋 Current Oracle services running:', listStdout);
+            // Create startup script (same logic as manual operations)
+            const startupScript = `CONNECT ${sysUsername}/${sysPassword} AS SYSDBA
+STARTUP;
+ALTER PLUGGABLE DATABASE ALL OPEN;
+EXIT;`;
+            
+            fs.writeFileSync(startupScriptPath, startupScript);
+            console.log('📝 Created startup script file');
+            
+            // Execute STARTUP
+            const startupCommand = `sqlplus /nolog @"${startupScriptPath}"`;
+            console.log(`🔧 Executing: ${startupCommand}`);
+            
+            exec(startupCommand, { timeout: 120000 }, (startupError, startupStdout, startupStderr) => {
+              console.log('📋 STARTUP output:', startupStdout);
+              
+              // Clean up startup script
+              try { fs.unlinkSync(startupScriptPath); } catch(e) {}
+              
+              if (startupError) {
+                console.error(`❌ STARTUP error: ${startupError.message}`);
+                resolve(false);
+                return;
               }
               
-              // Consider it successful if no errors occurred
-              resolve(true);
+              // Check for success indicators in output (same as manual)
+              const shutdownSuccess = shutdownStdout && (
+                shutdownStdout.includes('Database closed') ||
+                shutdownStdout.includes('Database dismounted') ||
+                shutdownStdout.includes('ORACLE instance shut down')
+              );
+              
+              const startupSuccess = startupStdout && (
+                startupStdout.includes('Database mounted') ||
+                startupStdout.includes('Database opened') ||
+                startupStdout.includes('ORACLE instance started')
+              );
+              
+              console.log(`📊 Shutdown indicators found: ${shutdownSuccess}`);
+              console.log(`📊 Startup indicators found: ${startupSuccess}`);
+              
+              if (startupSuccess || startupStdout.includes('Connected')) {
+                console.log('✅ Oracle database restart completed successfully via SQL*Plus');
+                resolve(true);
+              } else {
+                console.log('⚠️ Database restart may have succeeded, but unclear from output');
+                console.log('💡 Will let database status check verify if it worked');
+                resolve(true); // Let the database status check be the final arbiter
+              }
             });
-          });
-          
-        }, 5000); // 5 second delay
-      });
+            
+          }, 10000); // 10 second wait between shutdown and startup
+        });
+        
+      } catch (error) {
+        console.error('❌ Database restart process failed:', error);
+        resolve(false);
+      }
     });
   }
 
