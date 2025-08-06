@@ -116,6 +116,11 @@ class DatabaseAutoRecoveryService {
   async handleDatabaseDown() {
     const config = this.getConfig();
     
+    console.log('🚨 === DATABASE AUTO-RECOVERY STARTED ===');
+    console.log(`🔧 Auto-recovery enabled: ${config.enabled}`);
+    console.log(`🔧 Current attempts: ${this.recoveryAttempts}/${config.maxAttempts}`);
+    console.log(`🔧 Recovery in progress: ${this.isRecoveryInProgress}`);
+    
     if (!config.enabled) {
       console.log('📋 Auto-recovery is disabled, skipping recovery');
       return false;
@@ -138,33 +143,46 @@ class DatabaseAutoRecoveryService {
 
     try {
       // Step 1: Run "Stop Pods" script
-      console.log('📋 Step 1: Running "Stop Pods" script...');
+      console.log('📋 === STEP 1: STOP PODS ===');
+      console.log('🔍 Looking for script named "Stop Pods"...');
+      
       const stopResult = await this.runScriptByName('Stop Pods');
+      console.log(`📋 Stop script result:`, stopResult);
       
       if (!stopResult.success) {
-        throw new Error(`Stop Pods script failed: ${stopResult.error}`);
+        const errorMsg = `Stop Pods script failed: ${stopResult.error}`;
+        console.error(`❌ ${errorMsg}`);
+        throw new Error(errorMsg);
       }
       
+      console.log('✅ Stop Pods script completed successfully');
+      
       // Wait after stop
-      console.log(`⏳ Step 2: Waiting ${config.waitAfterStop}ms after stop...`);
+      console.log(`📋 === STEP 2: WAITING ${config.waitAfterStop}ms ===`);
       await this.sleep(config.waitAfterStop);
       
       // Step 3: Try to restart the database
-      console.log('🔄 Step 3: Attempting to restart database...');
+      console.log('📋 === STEP 3: RESTART DATABASE ===');
       const restartSuccess = await this.restartDatabase();
+      console.log(`📋 Database restart result: ${restartSuccess}`);
       
       if (restartSuccess) {
         // Step 4: Wait for database to come up
-        console.log(`⏳ Step 4: Waiting ${config.waitAfterRestart}ms for database to start...`);
+        console.log(`📋 === STEP 4: WAITING ${config.waitAfterRestart}ms FOR DB ===`);
         await this.sleep(config.waitAfterRestart);
         
         // Step 5: Check if database is really up
+        console.log('📋 === STEP 5: VERIFY DATABASE ===');
         const isUp = await this.checkDatabaseStatus();
+        console.log(`📋 Database status check result: ${isUp}`);
         
         if (isUp) {
           // Step 6: Run "Start Pods" script
-          console.log('✅ Step 5: Database is up, running "Start Pods" script...');
+          console.log('📋 === STEP 6: START PODS ===');
+          console.log('🔍 Looking for script named "Start Pods"...');
+          
           const startResult = await this.runScriptByName('Start Pods');
+          console.log(`📋 Start script result:`, startResult);
           
           if (!startResult.success) {
             console.log('⚠️ Start Pods script failed, but database is up');
@@ -176,6 +194,7 @@ class DatabaseAutoRecoveryService {
           
           this.recoveryAttempts = 0; // Reset attempts on success
           this.isRecoveryInProgress = false;
+          console.log('🚨 === DATABASE AUTO-RECOVERY COMPLETED ===');
           return true;
         } else {
           console.log('❌ Database failed to start after restart attempt');
@@ -192,6 +211,7 @@ class DatabaseAutoRecoveryService {
     }
 
     this.isRecoveryInProgress = false;
+    console.log('🚨 === DATABASE AUTO-RECOVERY FAILED ===');
     return false;
   }
 
@@ -201,14 +221,17 @@ class DatabaseAutoRecoveryService {
       const scriptService = require('./scriptService');
       const allScripts = scriptService.getAllScripts();
       
-      const script = allScripts.find(s => s.name === scriptName);
+      console.log(`🔍 Looking for script named: "${scriptName}"`);
+      console.log(`🔍 Available scripts:`, allScripts.map(s => `"${s.name}" (ID: ${s.id})`));
+      
+      const script = allScripts.find(s => s.name.trim() === scriptName.trim());
       
       if (script) {
-        console.log(`📋 Found script: "${scriptName}" (ID: ${script.id})`);
+        console.log(`✅ Found script: "${scriptName}" (ID: ${script.id})`);
         return script;
       } else {
-        console.log(`⚠️ Script not found: "${scriptName}"`);
-        console.log(`📋 Available scripts: ${allScripts.map(s => s.name).join(', ')}`);
+        console.log(`❌ Script not found: "${scriptName}"`);
+        console.log(`📋 Available script names: ${allScripts.map(s => `"${s.name}"`).join(', ')}`);
         return null;
       }
     } catch (error) {
@@ -220,10 +243,14 @@ class DatabaseAutoRecoveryService {
   // Run script by exact name
   async runScriptByName(scriptName) {
     try {
+      console.log(`🔧 runScriptByName called with: "${scriptName}"`);
+      
       const script = this.findScriptByName(scriptName);
       
       if (!script) {
-        throw new Error(`Script "${scriptName}" not found. Please create a script named exactly "${scriptName}" in your Script Manager.`);
+        const errorMsg = `Script "${scriptName}" not found. Please create a script named exactly "${scriptName}" in your Script Manager.`;
+        console.error(`❌ ${errorMsg}`);
+        throw new Error(errorMsg);
       }
       
       console.log(`🔧 Running script "${script.name}"`);
@@ -235,7 +262,7 @@ class DatabaseAutoRecoveryService {
       
       if (result.success) {
         console.log(`✅ Script "${script.name}" completed successfully`);
-        console.log(`📋 Output: ${result.output}`);
+        console.log(`📋 Output preview: ${(result.output || '').substring(0, 200)}...`);
         return { success: true, output: result.output };
       } else {
         console.error(`❌ Script "${script.name}" failed`);
