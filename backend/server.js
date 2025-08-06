@@ -19,6 +19,7 @@ const scriptService = require('./services/scriptService');
 const systemHeartbeatService = require('./services/systemHeartbeatService');
 const podMonitoringService = require('./services/podMonitoringService');
 const podRecoveryNotifier = require('./services/podRecoveryNotifier');
+const autoRecoveryRoutes = require('./routes/autoRecovery');
 
 
 const { exec } = require('child_process');
@@ -32,6 +33,7 @@ const PORT = 5001;
 // Middleware
 app.use(cors());
 app.use(express.json());
+app.use('/api/auto-recovery', autoRecoveryRoutes);
 
 // Import services
 const userService = require('./services/userService');

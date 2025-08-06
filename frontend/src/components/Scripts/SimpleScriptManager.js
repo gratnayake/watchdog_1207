@@ -34,6 +34,7 @@ import {
   WarningOutlined
 } from '@ant-design/icons';
 import { scriptAPI, simpleScriptAPI, databaseOperationsAPI } from '../../services/api';
+import AutoRecoveryControl from '../Database/AutoRecoveryControl';
 
 const { Title, Text } = Typography;
 const { Option } = Select;
@@ -286,7 +287,7 @@ const SimpleScriptManager = () => {
       </Card>
     );
   };
-
+ 
   // Render Kubernetes status indicator
   const renderKubernetesStatus = () => {
     if (!kubeStatus) return null;
@@ -552,7 +553,7 @@ const SimpleScriptManager = () => {
 
       {/* Database Operations Section */}
       {renderDatabaseOperations()}
-
+      <AutoRecoveryControl />
       {/* Kubernetes Status */}
       {renderKubernetesStatus()}
 
