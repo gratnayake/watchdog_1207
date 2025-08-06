@@ -240,7 +240,7 @@ class DatabaseAutoRecoveryService {
     }
   }
 
-  // Run script by exact name
+  // Run script by exact name with proper environment
   async runScriptByName(scriptName) {
     try {
       console.log(`🔧 runScriptByName called with: "${scriptName}"`);
@@ -256,6 +256,12 @@ class DatabaseAutoRecoveryService {
       console.log(`🔧 Found script "${script.name}" with ID: ${script.id}`);
       console.log(`📋 Script path: ${script.scriptPath}`);
       console.log(`📋 Arguments: ${script.arguments || 'None'}`);
+      
+      // ENHANCED: Run script with better environment for Java/mtctl.cmd
+      if (script.scriptPath.includes('mtctl.cmd')) {
+        console.log('🔧 Detected mtctl.cmd script - using enhanced execution environment');
+        return await this.runMtctlScript(script);
+      }
       
       const scriptService = require('./scriptService');
       
@@ -281,61 +287,135 @@ class DatabaseAutoRecoveryService {
     }
   }
 
-  // Restart the database (you'll need to customize this for your database)
+  // Special handler for mtctl.cmd scripts with proper environment
+  async runMtctlScript(script) {
+    return new Promise((resolve) => {
+      const path = require('path');
+      const { exec } = require('child_process');
+      
+      // Extract directory from script path
+      const scriptDir = path.dirname(script.scriptPath);
+      const scriptFile = path.basename(script.scriptPath);
+      
+      console.log(`🔧 Running mtctl.cmd with enhanced environment:`);
+      console.log(`📁 Working directory: ${scriptDir}`);
+      console.log(`📄 Script file: ${scriptFile}`);
+      console.log(`⚙️ Arguments: ${script.arguments}`);
+      
+      // Build command - run from the script's directory
+      const command = `cd /d "${scriptDir}" && ${scriptFile} ${script.arguments || ''}`;
+      console.log(`🖥️ Full command: ${command}`);
+      
+      // Enhanced environment options
+      const execOptions = {
+        cwd: scriptDir, // Run from script's directory
+        timeout: 300000, // 5 minutes timeout
+        maxBuffer: 1024 * 1024 * 10, // 10MB buffer
+        env: {
+          ...process.env, // Inherit all environment variables
+          // Add any specific environment variables if needed
+          // JAVA_HOME: 'C:\\Program Files\\Java\\jdk-11', // Uncomment if needed
+        },
+        shell: true,
+        windowsHide: true
+      };
+      
+      console.log('🚀 Executing mtctl.cmd with enhanced environment...');
+      
+      exec(command, execOptions, (error, stdout, stderr) => {
+        console.log('📋 mtctl.cmd execution completed');
+        console.log('📋 STDOUT:', stdout);
+        console.log('📋 STDERR:', stderr);
+        
+        if (error) {
+          console.error(`❌ mtctl.cmd execution error:`, error);
+          resolve({ 
+            success: false, 
+            error: error.message,
+            output: `Error: ${error.message}\nSTDOUT: ${stdout}\nSTDERR: ${stderr}` 
+          });
+          return;
+        }
+        
+        // Check for Java errors even if command didn't fail
+        if (stderr && (stderr.includes('ClassNotFoundException') || stderr.includes('Error:'))) {
+          console.error(`❌ mtctl.cmd Java error detected in stderr`);
+          resolve({ 
+            success: false, 
+            error: 'Java ClassNotFoundException or other error',
+            output: `STDOUT: ${stdout}\nSTDERR: ${stderr}` 
+          });
+          return;
+        }
+        
+        // Success
+        console.log('✅ mtctl.cmd completed successfully');
+        resolve({ 
+          success: true, 
+          output: `STDOUT: ${stdout}\nSTDERR: ${stderr}` 
+        });
+      });
+    });
+  }
+
+  // Restart the database (customized for your Oracle setup)
   async restartDatabase() {
     return new Promise((resolve) => {
       console.log('🔄 Attempting to restart Oracle database...');
       
-      // Try multiple restart strategies
-      const restartCommands = [
-        // Windows Oracle XE restart
-        'net stop OracleServiceXE && timeout /t 5 && net start OracleServiceXE',
-        // Windows Oracle standard restart  
-        'net stop OracleServiceORCL && timeout /t 5 && net start OracleServiceORCL',
-        // Windows generic Oracle service restart
-        'net stop Oracle* && timeout /t 5 && net start Oracle*',
-        // Alternative Windows approach
-        'sc stop OracleServiceXE && timeout /t 5 && sc start OracleServiceXE'
-      ];
-
-      // For Linux/Mac Oracle restart (uncomment if needed):
-      // const restartCommands = [
-      //   'sudo systemctl restart oracle-xe',
-      //   'sudo service oracle-xe restart',
-      //   'sudo systemctl restart oracle',
-      //   'sudo service oracle restart'
-      // ];
-
-      console.log('🔧 Trying database restart strategies...');
+      // Based on your system, the correct services are:
+      // - OracleServiceUATCDB (main database service)
+      // - OracleOraDB19Home1TNSListener (listener)
       
-      // Try the first command that seems most appropriate
-      const restartCommand = restartCommands[0];
-      console.log(`🔧 Executing: ${restartCommand}`);
+      console.log('🔧 Stopping Oracle services...');
       
-      exec(restartCommand, { timeout: 60000 }, (error, stdout, stderr) => {
-        console.log('📋 Database restart command output:');
-        console.log('STDOUT:', stdout);
-        console.log('STDERR:', stderr);
+      // First stop the database service, then the listener
+      const stopCommand = 'net stop OracleServiceUATCDB && net stop OracleOraDB19Home1TNSListener';
+      
+      exec(stopCommand, { timeout: 60000 }, (stopError, stopStdout, stopStderr) => {
+        console.log('📋 Oracle stop command output:');
+        console.log('STDOUT:', stopStdout);
+        console.log('STDERR:', stopStderr);
         
-        if (error) {
-          console.error(`❌ Database restart error: ${error.message}`);
-          console.error(`❌ Error code: ${error.code}`);
-          console.error(`❌ Error signal: ${error.signal}`);
-          
-          // If the first command fails, let's try to provide more info
-          console.log('🔍 Checking Oracle services...');
-          exec('net start | findstr Oracle', (listError, listStdout, listStderr) => {
-            if (listStdout) {
-              console.log('📋 Oracle services found:', listStdout);
-            } else {
-              console.log('📋 No Oracle services found in service list');
-            }
-            resolve(false);
-          });
-        } else {
-          console.log('✅ Database restart command completed successfully');
-          resolve(true);
+        if (stopError) {
+          console.error(`❌ Oracle stop error: ${stopError.message}`);
         }
+        
+        // Wait 5 seconds between stop and start
+        console.log('⏳ Waiting 5 seconds between stop and start...');
+        setTimeout(() => {
+          
+          console.log('🔧 Starting Oracle services...');
+          
+          // Start listener first, then database service
+          const startCommand = 'net start OracleOraDB19Home1TNSListener && net start OracleServiceUATCDB';
+          
+          exec(startCommand, { timeout: 120000 }, (startError, startStdout, startStderr) => {
+            console.log('📋 Oracle start command output:');
+            console.log('STDOUT:', startStdout);
+            console.log('STDERR:', startStderr);
+            
+            if (startError) {
+              console.error(`❌ Oracle start error: ${startError.message}`);
+              console.error(`❌ Error code: ${startError.code}`);
+              resolve(false);
+              return;
+            }
+            
+            console.log('✅ Oracle database restart command completed successfully');
+            
+            // Check if both services actually started
+            exec('net start | findstr Oracle', (listError, listStdout, listStderr) => {
+              if (listStdout) {
+                console.log('📋 Current Oracle services running:', listStdout);
+              }
+              
+              // Consider it successful if no errors occurred
+              resolve(true);
+            });
+          });
+          
+        }, 5000); // 5 second delay
       });
     });
   }
