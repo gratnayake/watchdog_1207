@@ -383,6 +383,7 @@ class DatabaseAutoRecoveryService {
         
         // Step 1: SHUTDOWN IMMEDIATE using SQL*Plus
         console.log('🛑 Step 1: SHUTDOWN IMMEDIATE via SQL*Plus');
+        console.log('💡 Note: Database might already be down from manual shutdown');
         
         const tempDir = path.join(__dirname, '../temp');
         if (!fs.existsSync(tempDir)) {
@@ -407,8 +408,12 @@ EXIT;`;
           // Clean up shutdown script
           try { fs.unlinkSync(shutdownScriptPath); } catch(e) {}
           
-          if (shutdownError) {
-            console.error(`❌ SHUTDOWN error: ${shutdownError.message}`);
+          // ENHANCED: Handle case where DB is already down
+          if (shutdownError || shutdownStdout.includes('not connected') || shutdownStdout.includes('ORA-')) {
+            console.log('💡 Database appears to already be shut down (expected for manual shutdown)');
+            console.log('📋 This is normal if database was manually shut down');
+          } else {
+            console.log('✅ SHUTDOWN IMMEDIATE completed');
           }
           
           // Wait 10 seconds between shutdown and startup (same as manual)
