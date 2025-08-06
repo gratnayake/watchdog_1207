@@ -71,8 +71,8 @@ class DatabaseAutoRecoveryService {
     return {
       enabled: this.isAutoRecoveryEnabled,
       maxAttempts: this.maxRecoveryAttempts,
-      waitAfterStop: 5000,
-      waitAfterRestart: 10000
+      waitAfterStop: 15000,  // Increased to 15 seconds for pods to fully stop
+      waitAfterRestart: 20000 // Increased to 20 seconds for database to fully start
     };
   }
 
@@ -286,26 +286,56 @@ class DatabaseAutoRecoveryService {
     return new Promise((resolve) => {
       console.log('🔄 Attempting to restart Oracle database...');
       
-      // For Windows Oracle restart
-      const restartCommand = 'net stop OracleServiceXE && timeout /t 5 && net start OracleServiceXE';
-      
+      // Try multiple restart strategies
+      const restartCommands = [
+        // Windows Oracle XE restart
+        'net stop OracleServiceXE && timeout /t 5 && net start OracleServiceXE',
+        // Windows Oracle standard restart  
+        'net stop OracleServiceORCL && timeout /t 5 && net start OracleServiceORCL',
+        // Windows generic Oracle service restart
+        'net stop Oracle* && timeout /t 5 && net start Oracle*',
+        // Alternative Windows approach
+        'sc stop OracleServiceXE && timeout /t 5 && sc start OracleServiceXE'
+      ];
+
       // For Linux/Mac Oracle restart (uncomment if needed):
-      // const restartCommand = 'sudo systemctl restart oracle-xe';
+      // const restartCommands = [
+      //   'sudo systemctl restart oracle-xe',
+      //   'sudo service oracle-xe restart',
+      //   'sudo systemctl restart oracle',
+      //   'sudo service oracle restart'
+      // ];
+
+      console.log('🔧 Trying database restart strategies...');
       
-      exec(restartCommand, (error, stdout, stderr) => {
+      // Try the first command that seems most appropriate
+      const restartCommand = restartCommands[0];
+      console.log(`🔧 Executing: ${restartCommand}`);
+      
+      exec(restartCommand, { timeout: 60000 }, (error, stdout, stderr) => {
+        console.log('📋 Database restart command output:');
+        console.log('STDOUT:', stdout);
+        console.log('STDERR:', stderr);
+        
         if (error) {
           console.error(`❌ Database restart error: ${error.message}`);
-          resolve(false);
-          return;
+          console.error(`❌ Error code: ${error.code}`);
+          console.error(`❌ Error signal: ${error.signal}`);
+          
+          // If the first command fails, let's try to provide more info
+          console.log('🔍 Checking Oracle services...');
+          exec('net start | findstr Oracle', (listError, listStdout, listStderr) => {
+            if (listStdout) {
+              console.log('📋 Oracle services found:', listStdout);
+            } else {
+              console.log('📋 No Oracle services found in service list');
+            }
+            resolve(false);
+          });
+        } else {
+          console.log('✅ Database restart command completed successfully');
+          resolve(true);
         }
-        
-        if (stderr) {
-          console.error(`❌ Database restart stderr: ${stderr}`);
-        }
-        
-        console.log(`📋 Database restart output: ${stdout}`);
-        console.log('✅ Database restart command completed');
-        resolve(true);
       });
     });
   }
