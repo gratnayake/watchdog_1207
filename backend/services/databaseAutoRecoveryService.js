@@ -9,14 +9,67 @@ class DatabaseAutoRecoveryService {
     this.recoveryAttempts = 0;
     this.maxRecoveryAttempts = 3;
     this.recoveryLog = [];
+    this.configFile = path.join(__dirname, '../data/autoRecoveryConfig.json');
+    
+    // Load saved configuration
+    this.loadConfig();
     
     console.log('🔧 Database Auto-Recovery Service initialized');
+    console.log(`🔧 Auto-recovery status: ${this.isAutoRecoveryEnabled ? 'ENABLED' : 'DISABLED'}`);
+  }
+
+  // Load configuration from file
+  loadConfig() {
+    try {
+      // Ensure data directory exists
+      const dataDir = path.dirname(this.configFile);
+      if (!fs.existsSync(dataDir)) {
+        fs.mkdirSync(dataDir, { recursive: true });
+      }
+
+      // Load config file if it exists
+      if (fs.existsSync(this.configFile)) {
+        const configData = fs.readFileSync(this.configFile, 'utf8');
+        const config = JSON.parse(configData);
+        
+        this.isAutoRecoveryEnabled = config.enabled || false;
+        this.maxRecoveryAttempts = config.maxAttempts || 3;
+        
+        console.log('📋 Loaded auto-recovery config from file');
+      } else {
+        // Create default config
+        this.isAutoRecoveryEnabled = false;
+        this.saveConfig();
+        console.log('📋 Created default auto-recovery config');
+      }
+    } catch (error) {
+      console.error('❌ Error loading auto-recovery config:', error);
+      this.isAutoRecoveryEnabled = false;
+    }
+  }
+
+  // Save configuration to file
+  saveConfig() {
+    try {
+      const config = {
+        enabled: this.isAutoRecoveryEnabled,
+        maxAttempts: this.maxRecoveryAttempts,
+        waitAfterStop: 5000,
+        waitAfterRestart: 10000,
+        lastUpdated: new Date().toISOString()
+      };
+      
+      fs.writeFileSync(this.configFile, JSON.stringify(config, null, 2));
+      console.log('💾 Auto-recovery config saved to file');
+    } catch (error) {
+      console.error('❌ Error saving auto-recovery config:', error);
+    }
   }
 
   // Get configuration (simplified)
   getConfig() {
     return {
-      enabled: this.isAutoRecoveryEnabled || false,
+      enabled: this.isAutoRecoveryEnabled,
       maxAttempts: this.maxRecoveryAttempts,
       waitAfterStop: 5000,
       waitAfterRestart: 10000
@@ -32,6 +85,9 @@ class DatabaseAutoRecoveryService {
       this.recoveryAttempts = 0;
       this.isRecoveryInProgress = false;
     }
+    
+    // Save to file immediately
+    this.saveConfig();
     
     return this.isAutoRecoveryEnabled;
   }
