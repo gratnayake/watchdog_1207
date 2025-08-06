@@ -148,29 +148,56 @@ class MonitoringService {
 
   // Handle database going down
   async handleDatabaseDown(timestamp, error) {
-    console.log('🚨 DATABASE WENT DOWN!');
-    
-    // Start tracking downtime
-    this.currentDowntimeId = logService.logDowntimeStart();
-    this.downtimeStartTime = timestamp;
-    this.emailSent = false;
-    
-    // Get database email group configuration
-    const dbConfig = dbConfigService.getConfig();
+  console.log('🚨 DATABASE WENT DOWN!');
+  
+  // Start tracking downtime
+  this.currentDowntimeId = logService.logDowntimeStart();
+  this.downtimeStartTime = timestamp;
+  this.emailSent = false;
+  
+  // Get database email group configuration
+  const dbConfig = dbConfigService.getConfig();
 
-    // Send email alert (only once)
-    try {
-      const emailSent = await this.sendDatabaseDownAlert(error, dbConfig.emailGroupId);
-      if (emailSent) {
-        this.emailSent = true;
-        console.log('📧 Database down alert email sent successfully');
-      } else {
-        console.log('❌ Failed to send database down alert email');
-      }
-    } catch (emailError) {
-      console.error('❌ Error sending database down alert:', emailError);
+  // Send email alert (only once)
+  try {
+    const emailSent = await this.sendDatabaseDownAlert(error, dbConfig.emailGroupId);
+    if (emailSent) {
+      this.emailSent = true;
+      console.log('📧 Database down alert email sent successfully');
+    } else {
+      console.log('❌ Failed to send database down alert email');
     }
+  } catch (emailError) {
+    console.error('❌ Error sending database down alert:', emailError);
   }
+
+  // *** ADD THIS NEW CODE FOR AUTO-RECOVERY ***
+  // Trigger auto-recovery after a short delay
+  setTimeout(async () => {
+    try {
+      console.log('🔧 Checking if auto-recovery is enabled...');
+      const databaseAutoRecoveryService = require('./databaseAutoRecoveryService');
+      
+      const recoveryStatus = databaseAutoRecoveryService.getAutoRecoveryStatus();
+      console.log(`🔧 Auto-recovery enabled: ${recoveryStatus.enabled}`);
+      
+      if (recoveryStatus.enabled) {
+        console.log('🚨 Triggering automatic database recovery...');
+        const recoveryResult = await databaseAutoRecoveryService.handleDatabaseDown();
+        
+        if (recoveryResult) {
+          console.log('✅ Auto-recovery completed successfully!');
+        } else {
+          console.log('❌ Auto-recovery failed or reached max attempts');
+        }
+      } else {
+        console.log('📋 Auto-recovery is disabled, skipping automatic recovery');
+      }
+    } catch (recoveryError) {
+      console.error('❌ Auto-recovery process failed:', recoveryError);
+    }
+  }, 10000); // Wait 10 seconds before attempting recovery (avoid false alarms)
+}
 
   // Handle database coming back up
   async handleDatabaseUp(timestamp) {
