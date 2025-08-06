@@ -253,12 +253,17 @@ class DatabaseAutoRecoveryService {
         throw new Error(errorMsg);
       }
       
-      console.log(`🔧 Running script "${script.name}"`);
+      console.log(`🔧 Found script "${script.name}" with ID: ${script.id}`);
       console.log(`📋 Script path: ${script.scriptPath}`);
       console.log(`📋 Arguments: ${script.arguments || 'None'}`);
       
       const scriptService = require('./scriptService');
-      const result = await scriptService.runScript(script);
+      
+      // IMPORTANT: Pass the script ID, not the script object
+      console.log(`🔧 Calling scriptService.runScript with ID: ${script.id}`);
+      const result = await scriptService.runScript(script.id);
+      
+      console.log(`📋 Script service returned:`, { success: result.success, error: result.error });
       
       if (result.success) {
         console.log(`✅ Script "${script.name}" completed successfully`);
