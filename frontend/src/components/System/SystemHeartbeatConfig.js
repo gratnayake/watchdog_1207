@@ -270,7 +270,7 @@ const SystemHeartbeatConfig = () => {
         </Col>
       </Row>
 
-      {/* Quick Actions */}
+      {/* SIMPLIFIED: Only Start/Stop buttons - No Enable Toggle */}
       <Card style={{ marginBottom: '24px' }}>
         <Space>
           <Button
@@ -278,6 +278,7 @@ const SystemHeartbeatConfig = () => {
             icon={status?.isRunning ? <PauseCircleOutlined /> : <PlayCircleOutlined />}
             onClick={status?.isRunning ? handleStop : handleStart}
             loading={loading}
+            size="large"
           >
             {status?.isRunning ? 'Stop Heartbeat' : 'Start Heartbeat'}
           </Button>
@@ -286,6 +287,7 @@ const SystemHeartbeatConfig = () => {
             onClick={handleTestHeartbeat}
             loading={loading}
             disabled={!config.emailGroupId}
+            size="large"
           >
             Send Test Heartbeat
           </Button>
@@ -293,6 +295,7 @@ const SystemHeartbeatConfig = () => {
             icon={<SettingOutlined />}
             onClick={loadData}
             loading={loading}
+            size="large"
           >
             Refresh Status
           </Button>
@@ -306,7 +309,7 @@ const SystemHeartbeatConfig = () => {
           layout="vertical"
           onFinish={handleSave}
           initialValues={{
-            enabled: false,
+            // REMOVED: enabled field - heartbeat is controlled only by start/stop buttons
             intervalMinutes: 60,
             includeSystemStats: true,
             includeHealthSummary: true,
@@ -320,18 +323,7 @@ const SystemHeartbeatConfig = () => {
           }}
         >
           <Row gutter={[24, 0]}>
-            <Col span={12}>
-              <Form.Item
-                name="enabled"
-                label="Enable Heartbeat"
-                valuePropName="checked"
-              >
-                <Switch 
-                  checkedChildren="Enabled"
-                  unCheckedChildren="Disabled"
-                />
-              </Form.Item>
-
+            <Col span={12}>              
               <Form.Item
                 name="intervalMinutes"
                 label={
@@ -494,7 +486,7 @@ const SystemHeartbeatConfig = () => {
                 <p><strong>Purpose:</strong> Sends regular emails to verify the system is running and healthy.</p>
                 <p><strong>Content:</strong> System uptime, memory usage, service health, and any issues detected.</p>
                 <p><strong>Threshold Alerts:</strong> Warnings are included if system metrics exceed configured thresholds.</p>
-                <p><strong>Recommendation:</strong> Set interval based on your monitoring needs (1-4 hours for production systems).</p>
+                <p><strong>Control:</strong> Use the Start/Stop Heartbeat buttons above to control monitoring. Configuration changes are applied immediately.</p>
               </div>
             }
             type="info"
@@ -509,12 +501,14 @@ const SystemHeartbeatConfig = () => {
                 htmlType="submit" 
                 loading={loading}
                 icon={<HeartOutlined />}
+                size="large"
               >
                 Save Configuration
               </Button>
               <Button 
                 onClick={() => form.resetFields()}
                 disabled={loading}
+                size="large"
               >
                 Reset
               </Button>
@@ -523,17 +517,10 @@ const SystemHeartbeatConfig = () => {
         </Form>
       </Card>
 
-      {/* Current Configuration Display */}
+      {/* Current Configuration Display - SIMPLIFIED: No enabled status */}
       {config && (
         <Card title="Current Configuration" style={{ marginTop: '24px' }}>
           <Row gutter={[16, 16]}>
-            <Col span={8}>
-              <Text strong>Status: </Text>
-              <Badge 
-                status={config.enabled ? 'success' : 'default'} 
-                text={config.enabled ? 'Enabled' : 'Disabled'}
-              />
-            </Col>
             <Col span={8}>
               <Text strong>Interval: </Text>
               <Text>{getIntervalText(config.intervalMinutes)}</Text>
@@ -544,13 +531,13 @@ const SystemHeartbeatConfig = () => {
                 {emailGroups.find(g => g.id == config.emailGroupId)?.name || 'Not configured'}
               </Text>
             </Col>
-          </Row>
-          
-          <Row gutter={[16, 16]} style={{ marginTop: '16px' }}>
             <Col span={8}>
               <Text strong>System Stats: </Text>
               <Text>{config.includeSystemStats ? 'Included' : 'Excluded'}</Text>
             </Col>
+          </Row>
+          
+          <Row gutter={[16, 16]} style={{ marginTop: '16px' }}>
             <Col span={8}>
               <Text strong>Health Summary: </Text>
               <Text>{config.includeHealthSummary ? 'Included' : 'Excluded'}</Text>
@@ -559,14 +546,15 @@ const SystemHeartbeatConfig = () => {
               <Text strong>Custom Message: </Text>
               <Text>{config.customMessage ? 'Set' : 'None'}</Text>
             </Col>
+            <Col span={8}>
+              {config.lastSent && (
+                <>
+                  <Text strong>Last Sent: </Text>
+                  <Text>{new Date(config.lastSent).toLocaleString()}</Text>
+                </>
+              )}
+            </Col>
           </Row>
-
-          {config.lastSent && (
-            <div style={{ marginTop: '16px' }}>
-              <Text strong>Last Sent: </Text>
-              <Text>{new Date(config.lastSent).toLocaleString()}</Text>
-            </div>
-          )}
         </Card>
       )}
     </div>

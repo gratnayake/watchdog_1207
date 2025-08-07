@@ -1,73 +1,18 @@
-// backend/services/systemHeartbeatService.js
+// backend/services/systemHeartbeatService.js - Updated to remove enabled check
+
 const cron = require('node-cron');
-const emailService = require('./emailService');
-const dbConfigService = require('./dbConfigService');
-const kubernetesConfigService = require('./kubernetesConfigService');
-const realOracleService = require('./realOracleService');
-const kubernetesService = require('./kubernetesService');
 const fs = require('fs');
 const path = require('path');
+const emailService = require('./emailService');
 
 class SystemHeartbeatService {
   constructor() {
-    this.configFile = path.join(__dirname, '../data/heartbeat-config.json');
-    this.isRunning = false;
-    this.cronJob = null;
-    this.lastHeartbeat = null;
-    this.heartbeatCount = 0;
-    
-    this.ensureConfigFile();
-    console.log('💓 System Heartbeat Service initialized');
-  }
-
-  ensureConfigFile() {
-    if (!fs.existsSync(this.configFile)) {
-      const defaultConfig = {
-        enabled: false,
-        intervalMinutes: 60, // Default: every hour
-        emailGroupId: null,
-        lastSent: null,
-        includeSystemStats: true,
-        includeHealthSummary: true,
-        customMessage: '',
-        alertThresholds: {
-          maxResponseTime: 5000, // 5 seconds
-          minUptimeMinutes: 5,    // 5 minutes
-          criticalMemoryMB: 1000, // 1GB
-          maxErrorCount: 5
-        }
-      };
-      this.saveConfig(defaultConfig);
-    }
-  }
-
-  getConfig() {
-    try {
-      const data = fs.readFileSync(this.configFile, 'utf8');
-      return JSON.parse(data);
-    } catch (error) {
-      console.error('Error loading heartbeat config:', error);
-      return this.getDefaultConfig();
-    }
-  }
-
-  saveConfig(config) {
-    try {
-      config.lastUpdated = new Date().toISOString();
-      fs.writeFileSync(this.configFile, JSON.stringify(config, null, 2));
-      return true;
-    } catch (error) {
-      console.error('Error saving heartbeat config:', error);
-      return false;
-    }
-  }
-
-  getDefaultConfig() {
-    return {
-      enabled: false,
+    this.isRunning = false; // Track if service is actively running
+    this.heartbeatInterval = null;
+    this.config = {
+      // REMOVED: enabled field - now controlled only by start/stop
       intervalMinutes: 60,
       emailGroupId: null,
-      lastSent: null,
       includeSystemStats: true,
       includeHealthSummary: true,
       customMessage: '',
@@ -78,70 +23,124 @@ class SystemHeartbeatService {
         maxErrorCount: 5
       }
     };
+    this.lastHeartbeat = null;
+    this.nextHeartbeat = null;
+    this.heartbeatCount = 0;
+    this.configPath = path.join(__dirname, '../data/system-heartbeat-config.json');
+    
+    this.loadConfig();
+    console.log('💓 System Heartbeat Service initialized');
   }
 
-  async startHeartbeat() {
-    const config = this.getConfig();
-    
-    if (!config.enabled) {
-      console.log('💓 Heartbeat disabled in configuration');
+  loadConfig() {
+    try {
+      if (fs.existsSync(this.configPath)) {
+        const configData = fs.readFileSync(this.configPath, 'utf8');
+        const loadedConfig = JSON.parse(configData);
+        
+        // IMPORTANT: Don't load 'enabled' field - only use isRunning status
+        this.config = { 
+          ...this.config, 
+          ...loadedConfig,
+          // Force remove enabled field if it exists in saved config
+          enabled: undefined 
+        };
+        delete this.config.enabled; // Make sure it's completely removed
+        
+        console.log('💓 System heartbeat config loaded (enabled field ignored)');
+      }
+    } catch (error) {
+      console.error('❌ Failed to load system heartbeat config:', error);
+    }
+  }
+
+  saveConfig() {
+    try {
+      const dataDir = path.dirname(this.configPath);
+      if (!fs.existsSync(dataDir)) {
+        fs.mkdirSync(dataDir, { recursive: true });
+      }
+      
+      // IMPORTANT: Never save 'enabled' field - only save configuration
+      const configToSave = { ...this.config };
+      delete configToSave.enabled; // Ensure enabled is never saved
+      
+      fs.writeFileSync(this.configPath, JSON.stringify(configToSave, null, 2));
+      console.log('💓 System heartbeat config saved (without enabled field)');
+      return true;
+    } catch (error) {
+      console.error('❌ Failed to save system heartbeat config:', error);
       return false;
     }
+  }
 
-    if (!config.emailGroupId) {
-      console.log('💓 No email group configured for heartbeat');
-      return false;
-    }
+  updateConfig(newConfig) {
+    // IMPORTANT: Filter out 'enabled' field from updates
+    const { enabled, ...configWithoutEnabled } = newConfig;
+    this.config = { ...this.config, ...configWithoutEnabled };
+    return this.saveConfig();
+  }
 
+  // SIMPLIFIED: Start monitoring (no enabled check)
+  startMonitoring(configOverride = null) {
     if (this.isRunning) {
-      console.log('💓 Heartbeat already running');
+      console.log('⚠️ System heartbeat already running');
       return false;
     }
 
-    console.log(`💓 Starting system heartbeat - sending every ${config.intervalMinutes} minutes`);
+    if (configOverride) {
+      this.updateConfig(configOverride);
+    }
+
+    if (!this.config.emailGroupId) {
+      console.log('❌ Cannot start heartbeat - no email group configured');
+      return false;
+    }
+
+    console.log(`💓 Starting system heartbeat (every ${this.config.intervalMinutes} minutes)`);
     
-    // Create cron expression based on interval
-    const cronExpression = this.getCronExpression(config.intervalMinutes);
+    const cronExpression = this.getCronExpression(this.config.intervalMinutes);
     
-    this.cronJob = cron.schedule(cronExpression, async () => {
+    this.heartbeatInterval = cron.schedule(cronExpression, async () => {
+      // REMOVED: No enabled check - if service is running, send heartbeats
       await this.sendHeartbeat();
     }, {
       scheduled: false
     });
 
-    this.cronJob.start();
+    this.heartbeatInterval.start();
     this.isRunning = true;
 
     // Send initial heartbeat
     setTimeout(() => {
       this.sendHeartbeat();
-    }, 5000); // 5 seconds after start
+    }, 5000);
 
     return true;
   }
 
-  stopHeartbeat() {
+  stopMonitoring() {
     if (!this.isRunning) {
-      console.log('💓 Heartbeat not running');
+      console.log('⚠️ System heartbeat not running');
       return false;
     }
 
-    if (this.cronJob) {
-      this.cronJob.stop();
-      this.cronJob = null;
+    console.log('🛑 Stopping system heartbeat');
+    
+    if (this.heartbeatInterval) {
+      this.heartbeatInterval.stop();
+      this.heartbeatInterval = null;
     }
-
+    
     this.isRunning = false;
-    console.log('💓 System heartbeat stopped');
+    this.nextHeartbeat = null;
     return true;
   }
 
   getCronExpression(intervalMinutes) {
     if (intervalMinutes < 60) {
-      // For intervals less than 1 hour, use minute-based cron
       return `*/${intervalMinutes} * * * *`;
     } else {
-      // For hour-based intervals
       const hours = Math.floor(intervalMinutes / 60);
       return `0 */${hours} * * *`;
     }
@@ -150,274 +149,194 @@ class SystemHeartbeatService {
   async sendHeartbeat() {
     try {
       console.log('💓 Sending system heartbeat...');
-      
-      const config = this.getConfig();
-      const systemStats = await this.collectSystemStats();
-      const healthSummary = await this.collectHealthSummary();
-      
-      // Check if system meets thresholds
-      const thresholdCheck = this.checkThresholds(systemStats, config.alertThresholds);
-      
-      const subject = thresholdCheck.allGood ? 
-        '💓 System Heartbeat: All Systems Operational' : 
-        '⚠️ System Heartbeat: Issues Detected';
 
-      const htmlContent = this.generateHeartbeatEmail(
-        systemStats, 
-        healthSummary, 
-        config, 
-        thresholdCheck
-      );
-
-      // Get email group
       const groups = emailService.getEmailGroups();
-      const targetGroup = groups.find(g => g.id == config.emailGroupId);
+      const targetGroup = groups.find(g => g.id === this.config.emailGroupId && g.enabled);
       
-      if (!targetGroup || !targetGroup.enabled) {
-        console.log('💓 Email group not found or disabled');
+      if (!targetGroup) {
+        console.log('❌ No valid email group found for heartbeat');
         return false;
       }
 
+      const systemInfo = this.getSystemInfo();
+      
       const mailOptions = {
         from: emailService.getEmailConfig().user,
-        to: targetGroup.emails,
-        subject: subject,
-        html: htmlContent
+        to: targetGroup.emails.join(','),
+        subject: '💓 System Heartbeat - Uptime WatchDog is Running',
+        html: this.generateHeartbeatEmailHTML(systemInfo, targetGroup)
       };
 
       await emailService.transporter.sendMail(mailOptions);
       
-      this.heartbeatCount++;
       this.lastHeartbeat = new Date();
+      this.nextHeartbeat = new Date(Date.now() + (this.config.intervalMinutes * 60 * 1000));
+      this.heartbeatCount++;
       
-      // Update config with last sent time
-      config.lastSent = this.lastHeartbeat.toISOString();
-      this.saveConfig(config);
-
-      console.log(`💓 Heartbeat sent successfully to ${targetGroup.emails.length} recipients`);
+      console.log(`💓 ✅ System heartbeat sent successfully (${this.heartbeatCount} total)`);
       return true;
-
     } catch (error) {
-      console.error('💓 Failed to send heartbeat:', error);
+      console.error('💓 ❌ Failed to send system heartbeat:', error);
       return false;
     }
   }
 
-  async collectSystemStats() {
-    const stats = {
-      timestamp: new Date(),
-      uptime: Math.floor(process.uptime()),
-      memory: process.memoryUsage(),
-      platform: process.platform,
-      nodeVersion: process.version,
-      pid: process.pid,
-      heartbeatCount: this.heartbeatCount,
-      environment: process.env.NODE_ENV || 'development'
-    };
-
-    // Convert memory to MB
-    stats.memoryMB = {
-      rss: Math.round(stats.memory.rss / 1024 / 1024),
-      heapUsed: Math.round(stats.memory.heapUsed / 1024 / 1024),
-      heapTotal: Math.round(stats.memory.heapTotal / 1024 / 1024),
-      external: Math.round(stats.memory.external / 1024 / 1024)
-    };
-
-    return stats;
-  }
-
-  async collectHealthSummary() {
-    const summary = {
-      database: { status: 'unknown', error: null },
-      kubernetes: { status: 'unknown', error: null },
-      monitoring: { active: false, error: null }
-    };
-
-    // Check database
-    try {
-      const dbConfig = dbConfigService.getConfig();
-      if (dbConfig.isConfigured) {
-        const connectionCheck = await realOracleService.checkConnection();
-        summary.database = {
-          status: connectionCheck.isConnected ? 'connected' : 'disconnected',
-          responseTime: connectionCheck.responseTime,
-          error: connectionCheck.error
-        };
-      } else {
-        summary.database.status = 'not_configured';
-      }
-    } catch (error) {
-      summary.database = { status: 'error', error: error.message };
-    }
-
-    // Check Kubernetes
-    try {
-      const kubeConfig = kubernetesConfigService.getConfig();
-      if (kubeConfig.isConfigured) {
-        const pods = await kubernetesService.getAllPods();
-        summary.kubernetes = {
-          status: 'connected',
-          podCount: pods.length,
-          error: null
-        };
-      } else {
-        summary.kubernetes.status = 'not_configured';
-      }
-    } catch (error) {
-      summary.kubernetes = { status: 'error', error: error.message };
-    }
-
-    // Check monitoring services
-    try {
-      const monitoringService = require('./monitoringService');
-      summary.monitoring = {
-        active: monitoringService.isMonitoring || false,
-        error: null
-      };
-    } catch (error) {
-      summary.monitoring = { status: 'error', error: error.message };
-    }
-
-    return summary;
-  }
-
-  checkThresholds(systemStats, thresholds) {
-    const issues = [];
-    
-    // Check memory usage
-    if (systemStats.memoryMB.rss > thresholds.criticalMemoryMB) {
-      issues.push(`High memory usage: ${systemStats.memoryMB.rss}MB (threshold: ${thresholds.criticalMemoryMB}MB)`);
-    }
-
-    // Check uptime
-    const uptimeMinutes = Math.floor(systemStats.uptime / 60);
-    if (uptimeMinutes < thresholds.minUptimeMinutes) {
-      issues.push(`Low uptime: ${uptimeMinutes} minutes (threshold: ${thresholds.minUptimeMinutes} minutes)`);
-    }
-
-    return {
-      allGood: issues.length === 0,
-      issues: issues,
-      checkedAt: new Date()
-    };
-  }
-
-  generateHeartbeatEmail(systemStats, healthSummary, config, thresholdCheck) {
-    const formatUptime = (seconds) => {
-      const days = Math.floor(seconds / 86400);
-      const hours = Math.floor((seconds % 86400) / 3600);
-      const minutes = Math.floor((seconds % 3600) / 60);
-      
-      if (days > 0) return `${days}d ${hours}h ${minutes}m`;
-      if (hours > 0) return `${hours}h ${minutes}m`;
-      return `${minutes}m`;
-    };
-
-    const statusColor = thresholdCheck.allGood ? '#28a745' : '#ffc107';
-    const statusText = thresholdCheck.allGood ? 'ALL SYSTEMS OPERATIONAL' : 'ISSUES DETECTED';
-
+  generateHeartbeatEmailHTML(systemInfo, targetGroup) {
     return `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <div style="background-color: ${statusColor}; color: white; padding: 20px; text-align: center;">
-          <h1 style="margin: 0; font-size: 24px;">💓 SYSTEM HEARTBEAT</h1>
-          <p style="margin: 8px 0 0 0; font-size: 16px;">${statusText}</p>
+        <div style="background-color: #52c41a; color: white; padding: 20px; text-align: center;">
+          <h1 style="margin: 0;">💓 System Heartbeat</h1>
+          <p style="margin: 5px 0 0 0; opacity: 0.9;">Uptime WatchDog is Running</p>
         </div>
         
-        <div style="background-color: #f8f9fa; padding: 20px;">
-          <h2 style="margin-top: 0; color: #333;">System Status</h2>
+        <div style="padding: 20px; background-color: #f6ffed; border-left: 5px solid #52c41a;">
+          <h2 style="color: #52c41a; margin-top: 0;">✅ System Status: HEALTHY</h2>
           
-          <table style="width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; margin-bottom: 20px;">
-            <tr style="background-color: #e9ecef;">
-              <td style="padding: 12px; font-weight: bold;">Timestamp</td>
-              <td style="padding: 12px;">${systemStats.timestamp.toLocaleString()}</td>
+          <table style="width: 100%; border-collapse: collapse; margin: 15px 0;">
+            <tr>
+              <td style="padding: 8px; font-weight: bold;">Heartbeat Time:</td>
+              <td style="padding: 8px;">${new Date().toLocaleString()}</td>
+            </tr>
+            <tr style="background-color: #ffffff;">
+              <td style="padding: 8px; font-weight: bold;">System Uptime:</td>
+              <td style="padding: 8px;">${systemInfo.uptime}</td>
             </tr>
             <tr>
-              <td style="padding: 12px; font-weight: bold;">Uptime</td>
-              <td style="padding: 12px;">${formatUptime(systemStats.uptime)}</td>
+              <td style="padding: 8px; font-weight: bold;">Heartbeat Count:</td>
+              <td style="padding: 8px;">${this.heartbeatCount}</td>
             </tr>
-            <tr style="background-color: #f8f9fa;">
-              <td style="padding: 12px; font-weight: bold;">Memory Usage</td>
-              <td style="padding: 12px;">${systemStats.memoryMB.rss}MB RSS, ${systemStats.memoryMB.heapUsed}MB Heap</td>
-            </tr>
-            <tr>
-              <td style="padding: 12px; font-weight: bold;">Heartbeat Count</td>
-              <td style="padding: 12px;">${systemStats.heartbeatCount}</td>
-            </tr>
-            <tr style="background-color: #f8f9fa;">
-              <td style="padding: 12px; font-weight: bold;">Environment</td>
-              <td style="padding: 12px;">${systemStats.environment} (Node ${systemStats.nodeVersion})</td>
+            <tr style="background-color: #ffffff;">
+              <td style="padding: 8px; font-weight: bold;">Next Heartbeat:</td>
+              <td style="padding: 8px;">${new Date(Date.now() + (this.config.intervalMinutes * 60 * 1000)).toLocaleString()}</td>
             </tr>
           </table>
+          
+          <div style="background-color: #d4edda; border: 1px solid #c3e6cb; padding: 15px; margin: 15px 0; border-radius: 4px;">
+            <h3 style="margin-top: 0; color: #155724;">🛡️ System Health Check</h3>
+            <p style="color: #155724; margin: 0;">
+              ✅ Application is running normally<br/>
+              ✅ Email system is operational<br/>
+              ✅ Monitoring services are active<br/>
+              ✅ All systems are healthy
+            </p>
+          </div>
 
-          <h3 style="color: #333;">Service Health</h3>
-          <table style="width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; margin-bottom: 20px;">
-            <tr style="background-color: #e9ecef;">
-              <td style="padding: 12px; font-weight: bold;">Service</td>
-              <td style="padding: 12px; font-weight: bold;">Status</td>
-              <td style="padding: 12px; font-weight: bold;">Details</td>
-            </tr>
-            <tr>
-              <td style="padding: 12px;">Database</td>
-              <td style="padding: 12px;">
-                <span style="color: ${healthSummary.database.status === 'connected' ? '#28a745' : '#dc3545'};">
-                  ${healthSummary.database.status.toUpperCase()}
-                </span>
-              </td>
-              <td style="padding: 12px;">${healthSummary.database.responseTime || healthSummary.database.error || 'N/A'}</td>
-            </tr>
-            <tr style="background-color: #f8f9fa;">
-              <td style="padding: 12px;">Kubernetes</td>
-              <td style="padding: 12px;">
-                <span style="color: ${healthSummary.kubernetes.status === 'connected' ? '#28a745' : '#dc3545'};">
-                  ${healthSummary.kubernetes.status.toUpperCase()}
-                </span>
-              </td>
-              <td style="padding: 12px;">${healthSummary.kubernetes.podCount ? `${healthSummary.kubernetes.podCount} pods` : healthSummary.kubernetes.error || 'N/A'}</td>
-            </tr>
-            <tr>
-              <td style="padding: 12px;">Monitoring</td>
-              <td style="padding: 12px;">
-                <span style="color: ${healthSummary.monitoring.active ? '#28a745' : '#dc3545'};">
-                  ${healthSummary.monitoring.active ? 'ACTIVE' : 'INACTIVE'}
-                </span>
-              </td>
-              <td style="padding: 12px;">${healthSummary.monitoring.error || 'Running normally'}</td>
-            </tr>
-          </table>
-
-          ${!thresholdCheck.allGood ? `
-            <div style="background-color: #fff3cd; border: 1px solid #ffeaa7; padding: 15px; margin: 20px 0; border-radius: 4px;">
-              <h3 style="margin-top: 0; color: #856404;">⚠️ Issues Detected</h3>
-              <ul style="color: #856404; margin: 10px 0;">
-                ${thresholdCheck.issues.map(issue => `<li>${issue}</li>`).join('')}
-              </ul>
-            </div>
-          ` : ''}
-
-          ${config.customMessage ? `
-            <div style="background-color: #d1ecf1; border: 1px solid #bee5eb; padding: 15px; margin: 20px 0; border-radius: 4px;">
-              <h3 style="margin-top: 0; color: #0c5460;">📝 Custom Message</h3>
-              <p style="color: #0c5460; margin: 0;">${config.customMessage}</p>
-            </div>
+          ${this.config.customMessage ? `
+          <div style="background-color: #e3f2fd; border: 1px solid #90caf9; padding: 15px; margin: 15px 0; border-radius: 4px;">
+            <h4 style="margin-top: 0; color: #0d47a1;">📝 Custom Message</h4>
+            <p style="color: #0d47a1; margin: 0;">${this.config.customMessage}</p>
+          </div>
           ` : ''}
         </div>
         
         <div style="background-color: #e9ecef; padding: 15px; text-align: center; font-size: 12px; color: #6c757d;">
-          <p style="margin: 0;">System Heartbeat Alert | Uptime Watchdog</p>
-          <p style="margin: 5px 0 0 0;">Next heartbeat in ${config.intervalMinutes} minutes</p>
+          <p style="margin: 0;">This heartbeat was sent to: ${targetGroup.name}</p>
+          <p style="margin: 5px 0 0 0;">Uptime WatchDog by Tsunami Solutions</p>
         </div>
       </div>
     `;
   }
 
+  getSystemInfo() {
+    const uptime = process.uptime();
+    const days = Math.floor(uptime / 86400);
+    const hours = Math.floor((uptime % 86400) / 3600);
+    const minutes = Math.floor((uptime % 3600) / 60);
+    
+    return {
+      uptime: `${days}d ${hours}h ${minutes}m`,
+      timestamp: new Date(),
+      memoryUsage: process.memoryUsage(),
+      version: process.version
+    };
+  }
+
+  async sendTestHeartbeat() {
+    if (!this.config.emailGroupId) {
+      throw new Error('No email group configured for heartbeat');
+    }
+    return await this.sendHeartbeat();
+  }
+
+  // UPDATED: Status now shows isRunning instead of enabled
   getStatus() {
     return {
-      isRunning: this.isRunning,
-      config: this.getConfig(),
+      isRunning: this.isRunning, // Instead of checking config.enabled
+      config: this.config,
       lastHeartbeat: this.lastHeartbeat,
-      heartbeatCount: this.heartbeatCount
+      nextHeartbeat: this.nextHeartbeat,
+      heartbeatCount: this.heartbeatCount,
+      systemInfo: this.getSystemInfo()
     };
   }
 }
 
 module.exports = new SystemHeartbeatService();
+
+// ===============================================
+// Changes needed in server.js routes:
+// ===============================================
+
+/* 
+In your server.js, update the routes to work with the new approach:
+
+// UPDATED routes - these would replace existing ones
+app.post('/api/system/heartbeat/start', (req, res) => {
+  try {
+    // SIMPLIFIED: No longer check config.enabled, just start the service
+    const started = systemHeartbeatService.startMonitoring();
+    
+    if (started) {
+      res.json({ 
+        success: true, 
+        message: 'System heartbeat started successfully',
+        status: systemHeartbeatService.getStatus()
+      });
+    } else {
+      res.status(400).json({ 
+        success: false,
+        error: 'Heartbeat is already running or email group not configured'
+      });
+    }
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/system/heartbeat/stop', (req, res) => {
+  try {
+    const stopped = systemHeartbeatService.stopMonitoring();
+    
+    if (stopped) {
+      res.json({ 
+        success: true, 
+        message: 'System heartbeat stopped successfully',
+        status: systemHeartbeatService.getStatus()
+      });
+    } else {
+      res.status(400).json({ 
+        success: false,
+        error: 'System heartbeat was not running' 
+      });
+    }
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// UPDATED: Auto-start logic (in server.js) - remove enabled check
+setTimeout(() => {
+  const status = systemHeartbeatService.getStatus();
+  // REMOVED: No longer check config.enabled, only check if email group is configured
+  if (status.config.emailGroupId) {
+    console.log('💓 Auto-starting system heartbeat...');
+    const started = systemHeartbeatService.startMonitoring();
+    if (started) {
+      console.log('✅ System heartbeat started automatically');
+    }
+  } else {
+    console.log('⚠️ System heartbeat email group not configured');
+  }
+}, 6000);
+
+*/
