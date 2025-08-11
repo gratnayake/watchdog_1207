@@ -3672,6 +3672,14 @@ setTimeout(() => {
   }
 }, 5000);
 
+setTimeout(async () => {
+  const config = kubernetesConfigService.getConfig();
+  if (config.isConfigured && config.thresholds?.monitoringEnabled) {
+    console.log('🚀 Auto-starting Kubernetes monitoring...');
+    const monitoringService = require('./services/kubernetesMonitoringService');
+    monitoringService.startMonitoring();
+  }
+}, 5000)
 // Auto-start monitoring if database is configured
 setTimeout(() => {
   const config = dbConfigService.getConfig();
