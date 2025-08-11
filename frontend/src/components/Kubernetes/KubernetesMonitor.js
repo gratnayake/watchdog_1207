@@ -21,8 +21,7 @@ import {
   message,
   Dropdown,
   Tooltip,
-  Progress,
-  PoweroffOutlined,  
+  Progress,  
   InputNumber,
   Popconfirm 
 } from 'antd';
@@ -45,7 +44,8 @@ import {
   WarningOutlined,
   ContainerOutlined,
   AppstoreOutlined,
-  UnorderedListOutlined
+  UnorderedListOutlined,
+  PoweroffOutlined
 } from '@ant-design/icons';
 
 import { kubernetesAPI } from '../../services/api';
