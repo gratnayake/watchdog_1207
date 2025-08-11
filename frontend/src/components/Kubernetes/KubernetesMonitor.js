@@ -72,7 +72,6 @@ const EnhancedKubernetesMonitor = () => {
   const [actionLoading, setActionLoading] = useState(false);
 
   // NEW: Grouped view state
-  const [viewMode, setViewMode] = useState('detailed'); // 'detailed' or 'grouped'
   const [groupedPods, setGroupedPods] = useState([]);
   const [showHealthyGroups, setShowHealthyGroups] = useState(true);
 
@@ -82,7 +81,7 @@ const EnhancedKubernetesMonitor = () => {
 
   useEffect(() => {
     loadEnhancedPods();
-  }, [selectedNamespace, includeDeleted, sortBy]);
+  }, [selectedNamespace]);
 
   useEffect(() => {
     let interval;
@@ -94,7 +93,7 @@ const EnhancedKubernetesMonitor = () => {
     return () => {
       if (interval) clearInterval(interval);
     };
-  }, [autoRefresh, selectedNamespace, includeDeleted, sortBy]);
+  }, [autoRefresh, selectedNamespace]);
 
   const loadInitialData = async () => {
     try {
@@ -114,7 +113,7 @@ const EnhancedKubernetesMonitor = () => {
   const loadEnhancedPods = async () => {
     try {
       setLoading(true);
-      const response = await fetch(`/api/kubernetes/pods/enhanced?namespace=${selectedNamespace}&includeDeleted=${includeDeleted}&sortBy=${sortBy}`);
+      const response = await fetch(`/api/kubernetes/pods/enhanced?namespace=${selectedNamespace}&includeDeleted=false&sortBy=name`);
       const data = await response.json();
       
       if (data.success) {
@@ -1052,52 +1051,50 @@ const EnhancedKubernetesMonitor = () => {
       )}
 
       {/* NEW: Summary Cards for Grouped View */}
-      {viewMode === 'grouped' && (
-        <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
-          <Col xs={24} sm={8}>
-            <Card>
-              <Space>
-                <CheckCircleOutlined style={{ fontSize: '24px', color: '#52c41a' }} />
-                <div>
-                  <div style={{ fontSize: '20px', fontWeight: 'bold' }}>
-                    {groupedPods.filter(g => !g.hasIssues).length}
-                  </div>
-                  <div style={{ fontSize: '12px', color: '#666' }}>Healthy Groups</div>
+      <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
+        <Col xs={24} sm={8}>
+          <Card>
+            <Space>
+              <CheckCircleOutlined style={{ fontSize: '24px', color: '#52c41a' }} />
+              <div>
+                <div style={{ fontSize: '20px', fontWeight: 'bold' }}>
+                  {groupedPods.filter(g => !g.hasIssues).length}
                 </div>
-              </Space>
-            </Card>
-          </Col>
-          <Col xs={24} sm={8}>
-            <Card>
-              <Space>
-                <WarningOutlined style={{ fontSize: '24px', color: '#fa8c16' }} />
-                <div>
-                  <div style={{ fontSize: '20px', fontWeight: 'bold' }}>
-                    {groupedPods.filter(g => g.hasIssues).length}
-                  </div>
-                  <div style={{ fontSize: '12px', color: '#666' }}>Groups with Issues</div>
+                <div style={{ fontSize: '12px', color: '#666' }}>Healthy Groups</div>
+              </div>
+            </Space>
+          </Card>
+        </Col>
+        <Col xs={24} sm={8}>
+          <Card>
+            <Space>
+              <WarningOutlined style={{ fontSize: '24px', color: '#fa8c16' }} />
+              <div>
+                <div style={{ fontSize: '20px', fontWeight: 'bold' }}>
+                  {groupedPods.filter(g => g.hasIssues).length}
                 </div>
-              </Space>
-            </Card>
-          </Col>
-          <Col xs={24} sm={8}>
-            <Card>
-              <Space>
-                <ContainerOutlined style={{ fontSize: '24px', color: '#1890ff' }} />
-                <div>
-                  <div style={{ fontSize: '20px', fontWeight: 'bold' }}>
-                    {groupedPods.length}
-                  </div>
-                  <div style={{ fontSize: '12px', color: '#666' }}>Total Groups</div>
+                <div style={{ fontSize: '12px', color: '#666' }}>Groups with Issues</div>
+              </div>
+            </Space>
+          </Card>
+        </Col>
+        <Col xs={24} sm={8}>
+          <Card>
+            <Space>
+              <ContainerOutlined style={{ fontSize: '24px', color: '#1890ff' }} />
+              <div>
+                <div style={{ fontSize: '20px', fontWeight: 'bold' }}>
+                  {groupedPods.length}
                 </div>
-              </Space>
-            </Card>
-          </Col>
-        </Row>
-      )}
+                <div style={{ fontSize: '12px', color: '#666' }}>Total Groups</div>
+              </div>
+            </Space>
+          </Card>
+        </Col>
+      </Row>
 
       {/* NEW: Issues Alert for Grouped View */}
-      {viewMode === 'grouped' && groupedPods.filter(g => g.hasIssues).length > 0 && (
+      {groupedPods.filter(g => g.hasIssues).length > 0 && (
         <Alert
           message={`${groupedPods.filter(g => g.hasIssues).length} deployment group${groupedPods.filter(g => g.hasIssues).length > 1 ? 's' : ''} have issues`}
           description="Red highlighted groups have pod count mismatches or readiness issues"
@@ -1110,37 +1107,13 @@ const EnhancedKubernetesMonitor = () => {
       {/* Enhanced Control Panel */}
       <Card style={{ marginBottom: 24 }}>
         <Row gutter={[16, 16]} align="middle">
-          <Col xs={24} md={5}>
-            <Space>
-              <Text>View:</Text>
-              <Select
-                value={viewMode}
-                onChange={setViewMode}
-                style={{ width: 120 }}
-              >
-                <Option value="detailed">
-                  <Space>
-                    <UnorderedListOutlined />
-                    Detailed
-                  </Space>
-                </Option>
-                <Option value="grouped">
-                  <Space>
-                    <AppstoreOutlined />
-                    Grouped
-                  </Space>
-                </Option>
-              </Select>
-            </Space>
-          </Col>
-
-          <Col xs={24} md={5}>
+          <Col xs={24} md={8}>
             <Space>
               <Text>Namespace:</Text>
               <Select
                 value={selectedNamespace}
                 onChange={setSelectedNamespace}
-                style={{ width: 130 }}
+                style={{ width: 150 }}
                 loading={namespaces.length === 0}
               >
                 <Option value="all">All Namespaces</Option>
@@ -1151,51 +1124,18 @@ const EnhancedKubernetesMonitor = () => {
             </Space>
           </Col>
 
-          {viewMode === 'detailed' && (
-            <Col xs={24} md={3}>
-              <Space>
-                <Text>Include Deleted:</Text>
-                <Switch
-                  checked={includeDeleted}
-                  onChange={setIncludeDeleted}
-                  size="small"
-                />
-              </Space>
-            </Col>
-          )}
-
-          {viewMode === 'grouped' && (
-            <Col xs={24} md={3}>
-              <Space>
-                <Text>Show Healthy:</Text>
-                <Switch
-                  checked={showHealthyGroups}
-                  onChange={setShowHealthyGroups}
-                  size="small"
-                />
-              </Space>
-            </Col>
-          )}
-
-          {viewMode === 'detailed' && (
-            <Col xs={24} md={3}>
-              <Space>
-                <Text>Sort by:</Text>
-                <Select
-                  value={sortBy}
-                  onChange={setSortBy}
-                  style={{ width: 100 }}
-                >
-                  <Option value="lastSeen">Last Seen</Option>
-                  <Option value="name">Name</Option>
-                  <Option value="status">Status</Option>
-                  <Option value="firstSeen">Created</Option>
-                </Select>
-              </Space>
-            </Col>
-          )}
-
           <Col xs={24} md={4}>
+            <Space>
+              <Text>Show Healthy:</Text>
+              <Switch
+                checked={showHealthyGroups}
+                onChange={setShowHealthyGroups}
+                size="small"
+              />
+            </Space>
+          </Col>
+
+          <Col xs={24} md={6}>
             <Space>
               <Button 
                 icon={<ReloadOutlined />} 
@@ -1213,7 +1153,7 @@ const EnhancedKubernetesMonitor = () => {
             </Space>
           </Col>
 
-          <Col xs={24} md={4}>
+          <Col xs={24} md={6}>
             <Text type="secondary" style={{ fontSize: '12px' }}>
               Last updated: {new Date().toLocaleTimeString()}
             </Text>
@@ -1221,53 +1161,29 @@ const EnhancedKubernetesMonitor = () => {
         </Row>
       </Card>
 
-      {/* Main Content - Conditional Rendering */}
-      {viewMode === 'detailed' ? (
-        /* Enhanced Pod Table */
-        <Card title={`Pod Lifecycle Monitor (${pods.length} pods)`}>
-          <Table
-            columns={enhancedColumns}
-            dataSource={pods}
-            rowKey={(pod) => `${pod.namespace}-${pod.name}-${pod.firstSeen}`}
-            loading={loading}
-            pagination={{
-              pageSize: 20,
-              showSizeChanger: true,
-              showQuickJumper: true,
-              showTotal: (total, range) => 
-                `${range[0]}-${range[1]} of ${total} pods`,
-            }}
-            rowClassName={(pod) => 
-              pod.isDeleted ? 'deleted-pod-row' : ''
-            }
-            scroll={{ x: 1200 }}
-          />
-        </Card>
-      ) : (
-        /* Grouped Pod Table */
-        <Card title={`Pod Groups (${showHealthyGroups ? groupedPods.length : groupedPods.filter(g => g.hasIssues).length} ReplicaSets)`}>
-          <Table
-            columns={groupColumns}
-            dataSource={showHealthyGroups ? groupedPods : groupedPods.filter(g => g.hasIssues)}
-            rowKey={(group) => `${group.namespace}/${group.replicaSetName}`}
-            loading={loading}
-            pagination={{
-              pageSize: 20,
-              showSizeChanger: true,
-              showQuickJumper: true,
-              showTotal: (total, range) => 
-                `${range[0]}-${range[1]} of ${total} ReplicaSets`,
-            }}
-            rowClassName={(group) => group.hasIssues ? 'unhealthy-group-row' : ''}
-            expandable={{
-              expandedRowRender: (group) => renderPodDetails(group.pods, group.replicaSetName),
-              expandRowByClick: true,
-              rowExpandable: (group) => group.pods.length > 0,
-            }}
-            scroll={{ x: 800 }}
-          />
-        </Card>
-      )}
+      {/* Grouped Pod Table */}
+      <Card title={`Pod Groups (${showHealthyGroups ? groupedPods.length : groupedPods.filter(g => g.hasIssues).length} ReplicaSets)`}>
+        <Table
+          columns={groupColumns}
+          dataSource={showHealthyGroups ? groupedPods : groupedPods.filter(g => g.hasIssues)}
+          rowKey={(group) => `${group.namespace}/${group.replicaSetName}`}
+          loading={loading}
+          pagination={{
+            pageSize: 20,
+            showSizeChanger: true,
+            showQuickJumper: true,
+            showTotal: (total, range) => 
+              `${range[0]}-${range[1]} of ${total} ReplicaSets`,
+          }}
+          rowClassName={(group) => group.hasIssues ? 'unhealthy-group-row' : ''}
+          expandable={{
+            expandedRowRender: (group) => renderPodDetails(group.pods, group.replicaSetName),
+            expandRowByClick: true,
+            rowExpandable: (group) => group.pods.length > 0,
+          }}
+          scroll={{ x: 800 }}
+        />
+      </Card>
 
       {/* Pod History Modal */}
       <Modal
