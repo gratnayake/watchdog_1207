@@ -178,14 +178,17 @@ const EnhancedKubernetesMonitor = () => {
 
   // Get namespace statistics
   const getNamespaceStats = (namespaceName) => {
-    const namespacePods = groupedPods[namespaceName] || [];
-    const running = namespacePods.filter(p => p.status === 'Running' && !p.isDeleted).length;
-    const failed = namespacePods.filter(p => p.status === 'Failed' && !p.isDeleted).length;
-    const pending = namespacePods.filter(p => p.status === 'Pending' && !p.isDeleted).length;
-    const total = namespacePods.filter(p => !p.isDeleted).length;
-    
-    return { running, failed, pending, total, allPods: namespacePods.length };
-  };
+  const namespacePods = groupedPods[namespaceName] || [];
+  const running = namespacePods.filter(p => p.status === 'Running' && !p.isDeleted && !p.isPartiallyReady && !p.isNotReady).length;
+  const failed = namespacePods.filter(p => p.status === 'Failed' && !p.isDeleted).length;
+  const pending = namespacePods.filter(p => p.status === 'Pending' && !p.isDeleted).length;
+  const partiallyReady = namespacePods.filter(p => p.isPartiallyReady && !p.isDeleted).length;
+  const notReady = namespacePods.filter(p => p.isNotReady && !p.isDeleted && !p.isMissing).length;
+  const missing = namespacePods.filter(p => p.isMissing).length;
+  const total = namespacePods.filter(p => !p.isDeleted).length;
+  
+  return { running, failed, pending, partiallyReady, notReady, missing, total, allPods: namespacePods.length };
+};
 
   // Handle pod actions
   const handlePodAction = async (action, pod) => {
@@ -229,7 +232,32 @@ const EnhancedKubernetesMonitor = () => {
 
   // Render pod item with actions
   const renderPodItem = (pod) => {
-    const statusColor = getStatusColor(pod.status, pod.isDeleted);
+    
+     let statusColor = getStatusColor(pod.status, pod.isDeleted);
+    let backgroundColor = 'transparent';
+    let borderLeft = 'none';
+    let readinessColor = '#52c41a';
+
+     if (pod.isMissing) {
+    backgroundColor = '#fff2f0';
+    borderLeft = '4px solid #ff4d4f';
+    readinessColor = '#ff4d4f';
+  } else if (pod.isNotReady) {
+    backgroundColor = '#fff2f0';
+    borderLeft = '2px solid #ff4d4f';
+    readinessColor = '#ff4d4f';
+  } else if (pod.isPartiallyReady) {
+    backgroundColor = '#fff7e6';
+    borderLeft = '3px solid #faad14';
+    readinessColor = '#faad14'; // Orange for partially ready
+  } else if (pod.isNewSinceSnapshot) {
+    backgroundColor = '#f6ffed';
+    borderLeft = '4px solid #52c41a';
+  } else if (pod.isDeleted) {
+    backgroundColor = '#fff2f0';
+    borderLeft = '2px solid #ff4d4f';
+    readinessColor = '#ff4d4f';
+  }
     
     const actions = [
       <Button
@@ -284,60 +312,118 @@ const EnhancedKubernetesMonitor = () => {
     ];
 
     return (
-      <List.Item
-        actions={actions}
-        style={{
-          backgroundColor: pod.isDeleted ? '#fff2f0' : 'transparent',
-          opacity: pod.isDeleted ? 0.7 : 1
-        }}
-      >
-        <List.Item.Meta
-          avatar={
-            <Badge dot color={statusColor}>
-              <Avatar 
-                size="small" 
-                style={{ backgroundColor: statusColor, fontSize: '10px' }}
-              >
-                {pod.name.charAt(0).toUpperCase()}
-              </Avatar>
-            </Badge>
-          }
-          title={
-            <Space>
-              <Text strong={!pod.isDeleted} delete={pod.isDeleted}>
-                {pod.name}
-              </Text>
-              <Tag color={statusColor} size="small">
-                {pod.status}
+    <List.Item
+      actions={actions}
+      style={{
+        backgroundColor,
+        borderLeft,
+        opacity: pod.isDeleted || pod.isMissing ? 0.7 : 1,
+        margin: '2px 0',
+        borderRadius: '4px',
+        padding: '8px 12px'
+      }}
+    >
+      <List.Item.Meta
+        avatar={
+          <Badge dot color={pod.isMissing ? '#ff4d4f' : statusColor}>
+            <Avatar 
+              size="small" 
+              style={{ 
+                backgroundColor: pod.isMissing ? '#ff4d4f' : 
+                                pod.isPartiallyReady ? '#faad14' :
+                                pod.isNotReady ? '#ff4d4f' : statusColor, 
+                fontSize: '10px' 
+              }}
+            >
+              {pod.isMissing ? '❌' : 
+               pod.isPartiallyReady ? '⚠️' :
+               pod.isNotReady ? '🔴' :
+               pod.name.charAt(0).toUpperCase()}
+            </Avatar>
+          </Badge>
+        }
+        title={
+          <Space>
+            <Text 
+              strong={!pod.isDeleted && !pod.isMissing} 
+              delete={pod.isDeleted}
+              style={{ 
+                color: pod.isMissing ? '#ff4d4f' : 
+                       pod.isPartiallyReady ? '#faad14' :
+                       pod.isNotReady ? '#ff4d4f' : undefined,
+                fontWeight: pod.isMissing || pod.isPartiallyReady || pod.isNotReady ? 'bold' : undefined 
+              }}
+            >
+              {pod.name}
+            </Text>
+            <Tag 
+              color={pod.isMissing ? 'red' : 
+                     pod.isPartiallyReady ? 'orange' :
+                     pod.isNotReady ? 'red' : statusColor} 
+              size="small"
+            >
+              {pod.isMissing ? `MISSING (${pod.missingReason})` : pod.status}
+            </Tag>
+            {pod.restarts > 0 && !pod.isMissing && (
+              <Tag color="orange" size="small">
+                {pod.restarts} restarts
               </Tag>
-              {pod.restarts > 0 && (
-                <Tag color="orange" size="small">
-                  {pod.restarts} restarts
-                </Tag>
-              )}
-            </Space>
-          }
-          description={
-            <Space size="large">
-              <Text type="secondary" style={{ fontSize: '12px' }}>
-                <DatabaseOutlined /> {pod.readinessRatio || pod.ready || '0/1'} Ready
+            )}
+            {pod.isNewSinceSnapshot && (
+              <Tag color="green" size="small">
+                NEW
+              </Tag>
+            )}
+            {pod.isPartiallyReady && (
+              <Tag color="orange" size="small">
+                PARTIALLY READY
+              </Tag>
+            )}
+            {pod.isNotReady && !pod.isMissing && (
+              <Tag color="red" size="small">
+                NOT READY
+              </Tag>
+            )}
+          </Space>
+        }
+        description={
+          <Space size="large">
+            <Text 
+              type="secondary" 
+              style={{ 
+                fontSize: '12px',
+                color: readinessColor,
+                fontWeight: pod.isPartiallyReady || pod.isNotReady ? 'bold' : 'normal'
+              }}
+            >
+              <DatabaseOutlined /> {pod.readinessRatio || pod.ready || '0/1'} Ready
+            </Text>
+            <Text type="secondary" style={{ fontSize: '12px' }}>
+              <NodeIndexOutlined /> {pod.node || 'Unknown'}
+            </Text>
+            <Text type="secondary" style={{ fontSize: '12px' }}>
+              <ClockCircleOutlined /> {pod.age || 'Unknown'}
+            </Text>
+            {pod.isMissing && (
+              <Text type="danger" style={{ fontSize: '11px' }}>
+                <WarningOutlined /> Missing from current state
               </Text>
-              <Text type="secondary" style={{ fontSize: '12px' }}>
-                <NodeIndexOutlined /> {pod.node || 'Unknown'}
+            )}
+            {pod.isPartiallyReady && (
+              <Text style={{ fontSize: '11px', color: '#faad14' }}>
+                <WarningOutlined /> Some containers not ready
               </Text>
-              <Text type="secondary" style={{ fontSize: '12px' }}>
-                <ClockCircleOutlined /> {pod.age || 'Unknown'}
+            )}
+            {pod.isNotReady && !pod.isMissing && (
+              <Text type="danger" style={{ fontSize: '11px' }}>
+                <WarningOutlined /> No containers ready
               </Text>
-              {pod.isDeleted && (
-                <Text type="danger" style={{ fontSize: '11px' }}>
-                  <WarningOutlined /> Deleted
-                </Text>
-              )}
-            </Space>
-          }
-        />
-      </List.Item>
-    );
+            )}
+          </Space>
+        }
+      />
+    </List.Item>
+  );
   };
 
   // Render namespace panel
@@ -345,29 +431,38 @@ const EnhancedKubernetesMonitor = () => {
     const stats = getNamespaceStats(namespaceName);
     
     const header = (
-      <Row justify="space-between" align="middle" style={{ width: '100%' }}>
-        <Col>
-          <Space>
-            <FolderOutlined style={{ color: '#1890ff' }} />
-            <Text strong>{namespaceName}</Text>
-            <Badge count={stats.total} color="#52c41a" />
-            {stats.failed > 0 && (
-              <Badge count={stats.failed} color="#ff4d4f" />
-            )}
-          </Space>
-        </Col>
-        <Col>
-          <Space>
-            <Tag color="success" size="small">{stats.running} Running</Tag>
-            {stats.failed > 0 && <Tag color="error" size="small">{stats.failed} Failed</Tag>}
-            {stats.pending > 0 && <Tag color="warning" size="small">{stats.pending} Pending</Tag>}
-            <Text type="secondary" style={{ fontSize: '11px' }}>
-              {includeDeleted ? `${stats.allPods} total` : `${stats.total} active`}
-            </Text>
-          </Space>
-        </Col>
-      </Row>
-    );
+  <Row justify="space-between" align="middle" style={{ width: '100%' }}>
+    <Col>
+      <Space>
+        <FolderOutlined style={{ color: '#1890ff' }} />
+        <Text strong>{namespaceName}</Text>
+        <Badge count={stats.running} color="#52c41a" />
+        {stats.partiallyReady > 0 && (
+          <Badge count={stats.partiallyReady} color="#faad14" />
+        )}
+        {stats.notReady > 0 && (
+          <Badge count={stats.notReady} color="#ff4d4f" />
+        )}
+        {stats.failed > 0 && (
+          <Badge count={stats.failed} color="#ff4d4f" />
+        )}
+        {stats.missing > 0 && (
+          <Badge count={stats.missing} color="#ff4d4f" style={{ marginLeft: 4 }} />
+        )}
+      </Space>
+    </Col>
+    <Col>
+      <Space>
+        <Tag color="success" size="small">{stats.running} Ready</Tag>
+        {stats.partiallyReady > 0 && <Tag color="warning" size="small">{stats.partiallyReady} Partial</Tag>}
+        {stats.notReady > 0 && <Tag color="error" size="small">{stats.notReady} Not Ready</Tag>}
+        {stats.failed > 0 && <Tag color="error" size="small">{stats.failed} Failed</Tag>}
+        {stats.pending > 0 && <Tag color="warning" size="small">{stats.pending} Pending</Tag>}
+        {stats.missing > 0 && <Tag color="error" size="small">{stats.missing} Missing</Tag>}
+      </Space>
+    </Col>
+  </Row>
+);
 
     return (
       <Panel

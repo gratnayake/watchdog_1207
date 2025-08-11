@@ -2267,11 +2267,17 @@ app.get('/api/kubernetes/pods/enhanced', async (req, res) => {
         );
         
         if (currentPod) {
-          // Pod exists - use current data but mark as from snapshot
+          
+          const isPartiallyReady = isPodPartiallyReady(currentPod.readinessRatio);
+          const isNotReady = isPodNotReady(currentPod.readinessRatio);
+          
           return {
             ...currentPod,
             wasInSnapshot: true,
             isMissing: false,
+            isPartiallyReady: isPartiallyReady,
+            isNotReady: isNotReady,
+            readinessStatus: isNotReady ? 'not-ready' : isPartiallyReady ? 'partially-ready' : 'ready',
             snapshotData: snapshotPod
           };
         } else {
@@ -2280,12 +2286,13 @@ app.get('/api/kubernetes/pods/enhanced', async (req, res) => {
             ...snapshotPod,
             wasInSnapshot: true,
             isMissing: true,
+            isPartiallyReady: false,
+            isNotReady: true,
+            readinessStatus: 'missing',
             missingReason: 'Not found in current cluster state',
             status: 'Missing',
             ready: '0/0',
-            readinessRatio: '0/0',
-            containers: snapshotPod.containers || [],
-            isDeleted: true
+            readinessRatio: '0/0'
           };
         }
       });
@@ -2299,11 +2306,17 @@ app.get('/api/kubernetes/pods/enhanced', async (req, res) => {
       );
       
       newPods.forEach(newPod => {
+        const isPartiallyReady = isPodPartiallyReady(newPod.readinessRatio);
+        const isNotReady = isPodNotReady(newPod.readinessRatio);
+        
         podsToReturn.push({
           ...newPod,
           wasInSnapshot: false,
           isMissing: false,
-          isNewSinceSnapshot: true
+          isNewSinceSnapshot: true,
+          isPartiallyReady: isPartiallyReady,
+          isNotReady: isNotReady,
+          readinessStatus: isNotReady ? 'not-ready' : isPartiallyReady ? 'partially-ready' : 'ready'
         });
       });
       
@@ -2457,6 +2470,32 @@ async function sendPodDisappearanceEmail(disappearanceAlert, emailGroupId) {
     console.error('📧 ❌ Failed to send pod disappearance email:', error);
     return false;
   }
+}
+// Add this helper function at the top of the enhanced endpoint
+function isPodPartiallyReady(readinessRatio) {
+  if (!readinessRatio || typeof readinessRatio !== 'string') return false;
+  
+  const parts = readinessRatio.split('/');
+  if (parts.length !== 2) return false;
+  
+  const ready = parseInt(parts[0]);
+  const total = parseInt(parts[1]);
+  
+  // Pod is partially ready if some containers are ready but not all
+  return ready > 0 && ready < total;
+}
+
+function isPodNotReady(readinessRatio) {
+  if (!readinessRatio || typeof readinessRatio !== 'string') return false;
+  
+  const parts = readinessRatio.split('/');
+  if (parts.length !== 2) return false;
+  
+  const ready = parseInt(parts[0]);
+  const total = parseInt(parts[1]);
+  
+  // Pod is not ready if no containers are ready
+  return ready === 0 && total > 0;
 }
 
 function isPodReadyComplete(pod) {
