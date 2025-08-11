@@ -77,148 +77,161 @@ const EnhancedKubernetesMonitor = () => {
     if (autoRefresh) {
       interval = setInterval(() => {
         loadEnhancedPods();
-      }, 30000);
+      }, 10000); // Refresh every 10 seconds
     }
     return () => {
       if (interval) clearInterval(interval);
     };
   }, [autoRefresh, selectedNamespace, includeDeleted, sortBy]);
 
-  // Function to group pods by deployment
+  // Function to group pods by deployment + replicaset
   const groupPodsByDeployment = (podsList) => {
     const workloadMap = new Map();
     
     podsList.forEach(pod => {
-      // Extract workload info - same logic as kubernetesMonitoringService
-      let workloadName = pod.name;
-      let workloadType = 'Pod';
+      // Skip deleted pods entirely - don't show them
+      if (pod.isDeleted) {
+        return;
+      }
+      
+      // Extract deployment + replicaset (keep the hash, only remove last pod hash)
+      let groupName = pod.name;
+      let deploymentName = pod.name;
       
       // Pattern: deployment-name-replicaset-hash-pod-hash
+      // Example: ifsapp-odata-7949dd6859-q9rrc -> group by ifsapp-odata-7949dd6859
       if (pod.name.includes('-')) {
         const parts = pod.name.split('-');
-        if (parts.length >= 3) {
-          // Remove last 2 parts (replicaset hash + pod hash)
-          workloadName = parts.slice(0, -2).join('-');
-          workloadType = 'Deployment';
+        if (parts.length >= 2) {
+          // Only remove the LAST part (pod hash)
+          groupName = parts.slice(0, -1).join('-');
+          // Deployment name is without replicaset and pod hash
+          if (parts.length >= 3) {
+            deploymentName = parts.slice(0, -2).join('-');
+          }
         }
       }
       
-      const workloadKey = `${workloadType}/${workloadName}/${pod.namespace}`;
+      const workloadKey = `${pod.namespace}/${groupName}`;
       
       if (!workloadMap.has(workloadKey)) {
         workloadMap.set(workloadKey, {
           key: workloadKey,
-          type: workloadType,
-          name: workloadName,
-          deployment: workloadName,
+          replicaSet: groupName,
+          deployment: deploymentName,
           namespace: pod.namespace,
           isGroup: true,
           children: [],
-          pods: [],
-          desiredReplicas: 0,
-          readyReplicas: 0,
-          totalPods: 0,
-          runningPods: 0,
-          deletedPods: 0,
-          failedPods: 0,
-          pendingPods: 0
+          originalCount: 0, // Will be calculated from snapshot info
+          currentCount: 0,
+          readyPods: 0,
+          totalContainersReady: 0,
+          totalContainersExpected: 0,
+          hasIssues: false
         });
       }
       
       const workload = workloadMap.get(workloadKey);
       
-      // Add pod to workload
+      // Add pod as child
       const childPod = {
         ...pod,
         key: `${workloadKey}/${pod.name}`,
         isChild: true,
-        parentDeployment: workloadName
+        parentGroup: groupName
       };
       
       workload.children.push(childPod);
-      workload.pods.push({
-        name: pod.name,
-        status: pod.status,
-        ready: pod.ready,
-        restarts: pod.restarts || 0,
-        age: pod.age,
-        node: pod.node,
-        readyContainers: pod.readyContainers || 0,
-        totalContainers: pod.totalContainers || 1
-      });
+      workload.currentCount++;
       
-      workload.totalPods++;
+      // Track container readiness
+      const readyContainers = pod.readyContainers || 0;
+      const totalContainers = pod.totalContainers || 1;
       
-      // Count pod states
-      if (pod.isDeleted) {
-        workload.deletedPods++;
-      } else {
-        if (pod.status === 'Running') {
-          workload.runningPods++;
-          // Count as ready only if ALL containers are ready
-          if (pod.ready === true || 
-              (pod.readyContainers && pod.totalContainers && 
-               pod.readyContainers === pod.totalContainers)) {
-            workload.readyReplicas++;
+      workload.totalContainersReady += readyContainers;
+      workload.totalContainersExpected += totalContainers;
+      
+      // Check if pod is fully ready
+      if (readyContainers === totalContainers && pod.status === 'Running') {
+        workload.readyPods++;
+      }
+      
+      // Track if this pod was in original snapshot
+      if (pod.wasInSnapshot || pod.wasFullyReadyInSnapshot) {
+        workload.originalCount = Math.max(workload.originalCount, workload.currentCount);
+      }
+    });
+    
+    // Now check for missing pods from snapshot
+    // We need to get the original counts from pods that were marked as deleted
+    podsList.forEach(pod => {
+      if (pod.isDeleted && pod.wasInSnapshot) {
+        // This pod was in snapshot but is now deleted
+        let groupName = pod.name;
+        if (pod.name.includes('-')) {
+          const parts = pod.name.split('-');
+          if (parts.length >= 2) {
+            groupName = parts.slice(0, -1).join('-');
           }
-        } else if (pod.status === 'Failed') {
-          workload.failedPods++;
-        } else if (pod.status === 'Pending') {
-          workload.pendingPods++;
+        }
+        
+        const workloadKey = `${pod.namespace}/${groupName}`;
+        const workload = workloadMap.get(workloadKey);
+        
+        if (workload) {
+          // Increment original count for deleted pods that were in snapshot
+          workload.originalCount++;
+        } else {
+          // Create a group for completely missing replicasets
+          const deploymentName = pod.name.includes('-') ? 
+            pod.name.split('-').slice(0, -2).join('-') : pod.name;
+            
+          workloadMap.set(workloadKey, {
+            key: workloadKey,
+            replicaSet: groupName,
+            deployment: deploymentName,
+            namespace: pod.namespace,
+            isGroup: true,
+            children: [],
+            originalCount: 1,
+            currentCount: 0,
+            readyPods: 0,
+            totalContainersReady: 0,
+            totalContainersExpected: 0,
+            hasIssues: true,
+            allPodsGone: true
+          });
         }
       }
     });
     
-    // Convert to array and calculate health status
+    // Convert to array and calculate status
     const result = [];
     workloadMap.forEach(workload => {
-      // Calculate workload health status
-      workload.desiredReplicas = workload.totalPods - workload.deletedPods;
+      // Calculate if there are issues
+      const missingPods = workload.originalCount > workload.currentCount;
+      const notAllReady = workload.readyPods < workload.currentCount;
+      const containersNotReady = workload.totalContainersReady < workload.totalContainersExpected;
       
-      // Calculate health status
-      const calculateWorkloadHealth = (wl) => {
-        const totalActivePods = wl.totalPods - wl.deletedPods;
-        const readyPods = wl.readyReplicas;
-        const runningPods = wl.runningPods;
-        
-        if (totalActivePods === 0) return 'empty';
-        if (readyPods === 0 && totalActivePods > 0) return 'critical';
-        if (readyPods < totalActivePods * 0.5) return 'degraded';
-        if (readyPods < totalActivePods) return 'warning';
-        if (runningPods < totalActivePods) return 'warning';
-        return 'healthy';
-      };
+      workload.hasIssues = missingPods || notAllReady || containersNotReady;
+      workload.missingCount = Math.max(0, workload.originalCount - workload.currentCount);
       
-      workload.healthStatus = calculateWorkloadHealth(workload);
+      // Set display counts
+      if (workload.originalCount === 0) {
+        workload.originalCount = workload.currentCount; // New pods not in snapshot
+      }
       
-      // Set display status
-      workload.status = workload.healthStatus === 'healthy' ? 'All Ready' :
-                       workload.healthStatus === 'critical' ? 'Critical' :
-                       workload.healthStatus === 'degraded' ? 'Degraded' :
-                       workload.healthStatus === 'warning' ? 'Warning' :
-                       workload.healthStatus === 'empty' ? 'No Active Pods' : 'Unknown';
-      
-      // Check if ANY pod has containers not fully ready
-      workload.hasUnreadyContainers = workload.pods.some(pod => {
-        return pod.readyContainers < pod.totalContainers;
-      });
-      
-      // Only add groups with multiple pods or single pods
-      if (workload.children.length > 1) {
+      // Only add groups that have pods or had pods in snapshot
+      if (workload.children.length > 0 || workload.originalCount > 0) {
         result.push(workload);
-      } else if (workload.children.length === 1) {
-        // Single pod - add directly without grouping
-        result.push(workload.children[0]);
       }
     });
     
-    // Sort by namespace and deployment name
+    // Sort by namespace and group name
     result.sort((a, b) => {
-      if (a.isGroup && !b.isGroup) return -1;
-      if (!a.isGroup && b.isGroup) return 1;
       const nsCompare = a.namespace.localeCompare(b.namespace);
       if (nsCompare !== 0) return nsCompare;
-      return (a.deployment || a.name).localeCompare(b.deployment || b.name);
+      return a.replicaSet.localeCompare(b.replicaSet);
     });
     
     return result;
@@ -438,42 +451,38 @@ const EnhancedKubernetesMonitor = () => {
 
   const enhancedColumns = [
     {
-      title: 'Workload/Pod',
+      title: 'ReplicaSet/Pod',
       key: 'details',
-      width: 350,
+      width: 400,
       render: (_, record) => {
-        // Group/Workload row
+        // Group/ReplicaSet row
         if (record.isGroup) {
-          const isUnhealthy = record.healthStatus === 'critical' || 
-                             record.healthStatus === 'degraded' ||
-                             record.hasUnreadyContainers;
+          const shouldHighlight = record.hasIssues;
           
           return (
             <Space direction="vertical" size="small">
               <div style={{ display: 'flex', alignItems: 'center' }}>
                 <Text strong style={{ 
                   fontSize: '14px',
-                  color: isUnhealthy ? '#ff4d4f' : 'inherit'
+                  color: shouldHighlight ? '#ff4d4f' : 'inherit'
                 }}>
-                  📦 {record.deployment}
+                  📦 {record.replicaSet}
                 </Text>
-                <Badge 
-                  count={record.totalPods} 
-                  style={{ 
-                    marginLeft: 8, 
-                    backgroundColor: isUnhealthy ? '#ff4d4f' : '#1890ff' 
-                  }}
-                />
-                {isUnhealthy && (
+                {shouldHighlight && (
                   <ExclamationCircleOutlined 
                     style={{ color: '#ff4d4f', marginLeft: 8 }} 
-                    title="Some pods are not fully ready"
+                    title={`Expected ${record.originalCount} pods, found ${record.currentCount}`}
                   />
                 )}
               </div>
-              <Text type="secondary" style={{ fontSize: '11px' }}>
-                Namespace: {record.namespace} | Type: {record.type}
-              </Text>
+              <Space>
+                <Text type="secondary" style={{ fontSize: '11px' }}>
+                  Deployment: {record.deployment}
+                </Text>
+                <Text type="secondary" style={{ fontSize: '11px' }}>
+                  | Namespace: {record.namespace}
+                </Text>
+              </Space>
             </Space>
           );
         }
@@ -485,14 +494,10 @@ const EnhancedKubernetesMonitor = () => {
           <Space direction="vertical" size="small" style={podStyle}>
             <div>
               <Text strong style={{ 
-                opacity: record.isDeleted ? 0.6 : 1,
                 fontSize: record.isChild ? '12px' : '13px'
               }}>
                 {record.isChild ? '└─ ' : ''}{record.name}
               </Text>
-              {record.isDeleted && (
-                <Tag color="red" size="small" style={{ marginLeft: 8 }}>DELETED</Tag>
-              )}
             </div>
             {!record.isGroup && (
               <Text type="secondary" style={{ fontSize: '11px' }}>
@@ -504,91 +509,79 @@ const EnhancedKubernetesMonitor = () => {
       },
     },
     {
-      title: 'Status',
+      title: 'Pod Status',
       key: 'status',
-      width: 180,
+      width: 200,
       render: (_, record) => {
-        // Group/Workload status
+        // Group status - show pod count
         if (record.isGroup) {
-          const getStatusColor = () => {
-            switch (record.healthStatus) {
-              case 'healthy': return 'green';
-              case 'critical': return 'red';
-              case 'degraded': return 'orange';
-              case 'warning': return 'gold';
-              case 'empty': return 'default';
-              default: return 'blue';
-            }
-          };
+          const isHealthy = !record.hasIssues;
+          const statusText = record.allPodsGone ? 
+            `0/${record.originalCount} pods` :
+            `${record.currentCount}/${record.originalCount} pods`;
           
           return (
             <Space direction="vertical" size="small">
-              <Tag color={getStatusColor()} style={{ fontSize: '12px' }}>
-                {record.status}
-              </Tag>
-              <Space size="small">
-                {record.runningPods > 0 && (
-                  <Tag color="green" size="small">{record.runningPods} Running</Tag>
-                )}
-                {record.deletedPods > 0 && (
-                  <Tag color="red" size="small">{record.deletedPods} Deleted</Tag>
-                )}
-                {record.failedPods > 0 && (
-                  <Tag color="red" size="small">{record.failedPods} Failed</Tag>
-                )}
-                {record.pendingPods > 0 && (
-                  <Tag color="orange" size="small">{record.pendingPods} Pending</Tag>
-                )}
-              </Space>
+              <div>
+                <Badge 
+                  count={statusText}
+                  style={{ 
+                    backgroundColor: isHealthy ? '#52c41a' : '#ff4d4f',
+                    fontSize: '12px'
+                  }}
+                />
+              </div>
+              {record.missingCount > 0 && (
+                <Text type="danger" style={{ fontSize: '11px' }}>
+                  {record.missingCount} pod{record.missingCount > 1 ? 's' : ''} missing
+                </Text>
+              )}
             </Space>
           );
         }
         
         // Individual pod status
         return (
-          <Space direction="vertical" size="small">
-            <div>
-              {record.lifecycleStage && (
-                <span style={{ marginRight: 8 }}>
-                  {getLifecycleStageIcon(record.lifecycleStage)}
-                </span>
-              )}
-              <Tag color={getStatusColor(record.status, record.isDeleted)}>
-                {record.isDeleted ? 'DELETED' : record.status}
-              </Tag>
-            </div>
-            {record.statusDuration && (
-              <Text type="secondary" style={{ fontSize: '11px' }}>
-                Duration: {record.statusDuration}
-              </Text>
-            )}
-          </Space>
+          <Tag color={getStatusColor(record.status, false)}>
+            {record.status}
+          </Tag>
         );
       },
     },
     {
-      title: 'Ready',
+      title: 'Containers Ready',
       key: 'ready',
-      width: 150,
+      width: 180,
       render: (_, record) => {
-        // Group/Workload ready status
+        // Group ready status - show container totals
         if (record.isGroup) {
-          const isFullyReady = record.readyReplicas === record.desiredReplicas && 
-                              !record.hasUnreadyContainers;
-          const color = isFullyReady ? '#52c41a' : '#ff4d4f';
+          if (record.allPodsGone) {
+            return (
+              <Badge 
+                count="All pods missing"
+                style={{ 
+                  backgroundColor: '#ff4d4f',
+                  fontSize: '12px'
+                }}
+              />
+            );
+          }
+          
+          const allReady = record.totalContainersReady === record.totalContainersExpected;
+          const containerText = `${record.totalContainersReady}/${record.totalContainersExpected}`;
           
           return (
             <Space direction="vertical" size="small">
               <Badge 
-                count={`${record.readyReplicas}/${record.desiredReplicas}`}
+                count={containerText}
                 style={{ 
-                  backgroundColor: color,
+                  backgroundColor: allReady ? '#52c41a' : '#ff4d4f',
                   fontSize: '12px'
                 }}
               />
-              {record.hasUnreadyContainers && (
+              {!allReady && record.totalContainersExpected > 0 && (
                 <Text type="danger" style={{ fontSize: '11px' }}>
-                  ⚠️ Some containers not ready
+                  ⚠️ Not all containers ready
                 </Text>
               )}
             </Space>
@@ -621,10 +614,8 @@ const EnhancedKubernetesMonitor = () => {
       width: 100,
       render: (_, record) => {
         if (record.isGroup) {
-          // Sum of all restarts in the group - with safety check
-          const totalRestarts = record.pods && record.pods.length > 0 
-            ? record.pods.reduce((sum, pod) => sum + (pod.restarts || 0), 0)
-            : 0;
+          // Sum of all restarts in the group
+          const totalRestarts = record.children.reduce((sum, pod) => sum + (pod.restarts || 0), 0);
             
           if (totalRestarts > 0) {
             return (
@@ -635,7 +626,7 @@ const EnhancedKubernetesMonitor = () => {
               />
             );
           }
-          return <Text type="secondary">-</Text>;
+          return <Text type="secondary">0</Text>;
         }
         
         // Individual pod restarts
@@ -667,26 +658,23 @@ const EnhancedKubernetesMonitor = () => {
       key: 'actions',
       width: 200,
       render: (_, record) => {
-        // Group/Workload actions
+        // Group actions
         if (record.isGroup) {
-          const hasActivePods = record.desiredReplicas > 0;
+          const hasActivePods = record.currentCount > 0;
           
           return (
             <Space>
-              {hasActivePods ? (
+              {hasActivePods && (
                 <Popconfirm
                   title="Stop All Pods?"
-                  description={`This will stop all ${record.desiredReplicas} active pods in ${record.deployment}`}
+                  description={`This will stop all ${record.currentCount} active pods in ${record.replicaSet}`}
                   onConfirm={async () => {
-                    message.loading(`Stopping all pods in ${record.deployment}...`, 0);
-                    // Stop all non-deleted pods
+                    message.loading(`Stopping all pods in ${record.replicaSet}...`, 0);
                     for (const pod of record.children) {
-                      if (!pod.isDeleted) {
-                        await handleRestartPod(pod);
-                      }
+                      await handleRestartPod(pod);
                     }
                     message.destroy();
-                    message.success(`Stopped all pods in ${record.deployment}`);
+                    message.success(`Stopped all pods in ${record.replicaSet}`);
                     setTimeout(loadEnhancedPods, 2000);
                   }}
                   okText="Yes, Stop All"
@@ -701,26 +689,20 @@ const EnhancedKubernetesMonitor = () => {
                     Stop All
                   </Button>
                 </Popconfirm>
-              ) : (
-                <Button
-                  size="small"
-                  type="primary"
-                  icon={<PlayCircleOutlined />}
-                  onClick={() => message.info('Use deployment scale to start pods')}
-                >
-                  Start
-                </Button>
+              )}
+              {record.missingCount > 0 && (
+                <Tooltip title={`${record.missingCount} pods are missing`}>
+                  <Tag color="red">
+                    {record.missingCount} Missing
+                  </Tag>
+                </Tooltip>
               )}
             </Space>
           );
         }
         
         // Individual pod actions
-        if (!record.isDeleted) {
-          return <PodActions pod={record} onPodAction={() => setTimeout(loadEnhancedPods, 2000)} />;
-        }
-        
-        return null;
+        return <PodActions pod={record} onPodAction={() => setTimeout(loadEnhancedPods, 2000)} />;
       },
     },
   ];
@@ -913,8 +895,8 @@ const EnhancedKubernetesMonitor = () => {
               `${range[0]}-${range[1]} of ${total} items`,
           }}
           rowClassName={(record) => {
+            if (record.isGroup && record.hasIssues) return 'degraded-group-row';
             if (record.isGroup) return 'group-row';
-            if (record.isDeleted) return 'deleted-pod-row';
             return '';
           }}
           scroll={{ x: 1200 }}
@@ -1068,6 +1050,14 @@ const EnhancedKubernetesMonitor = () => {
         }
         .group-row:hover {
           background-color: #e6f0ff !important;
+        }
+        .degraded-group-row {
+          background-color: #fff2f0 !important;
+          font-weight: 500;
+          border-left: 3px solid #ff4d4f;
+        }
+        .degraded-group-row:hover {
+          background-color: #ffebe6 !important;
         }
         .deleted-pod-row {
           background-color: #fff2f0 !important;
