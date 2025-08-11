@@ -455,17 +455,20 @@ app.get('/api/database/dashboard', async (req, res) => {
 
 app.get('/api/database/tablespace', async (req, res) => {
   try {
+    console.log('🔍 Tablespace API called');
     const config = dbConfigService.getConfig();
     
     if (!config.isConfigured) {
+      console.log('❌ Database not configured');
       return res.status(400).json({
         success: false,
         error: 'Database not configured'
       });
     }
 
+    console.log('📊 Fetching tablespace data...');
     const tablespaceData = await realOracleService.getTablespaceInfo();
-    console.log(`📊 Retrieved tablespace data for ${tablespaceData.length} tablespaces`);
+    console.log(`✅ Retrieved tablespace data for ${tablespaceData.length} tablespaces:`, tablespaceData);
     
     res.json({ success: true, data: tablespaceData });
   } catch (error) {
