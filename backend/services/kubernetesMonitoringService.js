@@ -442,9 +442,17 @@ async sendPodRestartEmail(pod, restartsIncrease, emailGroupId) {
     console.log(`✅ Retrieved ${currentPods.length} pods from cluster`);
 
 
-    // ADD THIS LINE: Track pod restarts BEFORE workload analysis
-    await this.trackPodRestarts(currentPods, config.emailGroupId);
+    console.log(`🔍 DEBUG: About to call trackPodRestarts with emailGroupId: ${config.emailGroupId}`);
+    console.log(`🔍 DEBUG: restartAlertConfig exists:`, !!this.restartAlertConfig);
+    console.log(`🔍 DEBUG: podRestartTracking exists:`, !!this.podRestartTracking);
 
+    // ADD THIS LINE: Track pod restarts BEFORE workload analysis
+    try {
+      await this.trackPodRestarts(currentPods, config.emailGroupId);
+      console.log(`🔍 DEBUG: trackPodRestarts completed successfully`);
+    } catch (error) {
+      console.log(`🔍 DEBUG: trackPodRestarts failed:`, error);
+    }
 
     // Group pods by workload for comparison
     const currentWorkloads = this.groupPodsByWorkload(currentPods);
