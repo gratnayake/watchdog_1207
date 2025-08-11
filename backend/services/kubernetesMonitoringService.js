@@ -14,8 +14,6 @@ class KubernetesMonitoringService {
     this.emailSentStatus = new Map();
     this.isMonitoring = false;
     this.checkInterval = null;
-    
-    
     this.isInitialized = false;
     this.initializationComplete = false;
     
@@ -30,6 +28,14 @@ class KubernetesMonitoringService {
     this.alertBatchTimeout = null;
     this.batchDelayMs = 30000; // Wait 30 seconds before sending batch
     
+    this.podRestartTracking = new Map(); // Track individual pod restart counts
+    this.restartAlertConfig = {
+      enabled: true,
+      threshold: 1, // Alert on any restart (set higher to be less noisy)
+      cooldownMs: 300000 // 5 minutes - don't alert again for same pod
+    };
+
+
     // Check every 2 minutes
     this.checkFrequency = '*/2 * * * *';
     
@@ -145,7 +151,13 @@ class KubernetesMonitoringService {
       workloadCount: this.workloadStatuses.size,
       pendingAlerts: this.getTotalPendingAlerts(),
       lastCheck: new Date(),
-      baselineWorkloads: Array.from(this.workloadStatuses.values()).filter(w => w.isBaseline).length
+      baselineWorkloads: Array.from(this.workloadStatuses.values()).filter(w => w.isBaseline).length,
+      restartTracking: {
+      enabled: this.restartAlertConfig.enabled,
+      threshold: this.restartAlertConfig.threshold,
+      cooldownMinutes: this.restartAlertConfig.cooldownMs / 60000,
+      trackedPods: this.podRestartTracking.size
+    }
     };
   }
 
@@ -174,9 +186,210 @@ class KubernetesMonitoringService {
     // Clear any pending alerts
     this.clearPendingAlerts();
     
+    this.podRestartTracking.clear();
+    
     console.log('✅ Monitoring state reset complete - fresh start');
   }
 
+  async trackPodRestarts(currentPods, emailGroupId) {
+  if (!this.restartAlertConfig.enabled || !emailGroupId) {
+    return;
+  }
+
+  console.log('🔄 Checking for pod restarts...');
+
+  for (const pod of currentPods) {
+    const podKey = `${pod.namespace}/${pod.name}`;
+    const currentRestarts = pod.restarts || 0;
+    const previousData = this.podRestartTracking.get(podKey);
+
+    if (previousData) {
+      const previousRestarts = previousData.restarts;
+      
+      // Check if restart count increased
+      if (currentRestarts > previousRestarts) {
+        const restartsIncrease = currentRestarts - previousRestarts;
+        
+        console.log(`🔄 Pod restarted: ${podKey} (${restartsIncrease} new restarts, ${currentRestarts} total)`);
+        
+        // Check cooldown period
+        const now = new Date();
+        const lastAlertTime = previousData.lastAlertTime;
+        const timeSinceLastAlert = lastAlertTime ? now.getTime() - lastAlertTime.getTime() : Infinity;
+        
+        // Send alert if threshold met and cooldown passed
+        if (restartsIncrease >= this.restartAlertConfig.threshold && 
+            timeSinceLastAlert >= this.restartAlertConfig.cooldownMs) {
+          
+          console.log(`📧 Sending restart alert for ${podKey}`);
+          await this.sendPodRestartEmail(pod, restartsIncrease, emailGroupId);
+          
+          // Update last alert time
+          this.podRestartTracking.set(podKey, {
+            restarts: currentRestarts,
+            lastSeen: now,
+            lastAlertTime: now
+          });
+        } else {
+          // Update restart count but don't alert (cooldown or threshold not met)
+          this.podRestartTracking.set(podKey, {
+            ...previousData,
+            restarts: currentRestarts,
+            lastSeen: now
+          });
+          
+          if (timeSinceLastAlert < this.restartAlertConfig.cooldownMs) {
+            console.log(`⏰ Restart alert suppressed for ${podKey} (cooldown: ${Math.round((this.restartAlertConfig.cooldownMs - timeSinceLastAlert) / 1000)}s remaining)`);
+          }
+        }
+      } else {
+        // No restart, just update last seen
+        this.podRestartTracking.set(podKey, {
+          ...previousData,
+          lastSeen: new Date()
+        });
+      }
+    } else {
+      // First time seeing this pod
+      this.podRestartTracking.set(podKey, {
+        restarts: currentRestarts,
+        lastSeen: new Date(),
+        lastAlertTime: null
+      });
+      
+      console.log(`👀 First time tracking pod: ${podKey} (${currentRestarts} restarts)`);
+    }
+  }
+
+  // Cleanup old pod tracking (pods that haven't been seen in 30 minutes)
+  this.cleanupOldPodTracking();
+}
+
+configureRestartAlerts(enabled = true, threshold = 1, cooldownMinutes = 5) {
+  this.restartAlertConfig = {
+    enabled: enabled,
+    threshold: threshold,
+    cooldownMs: cooldownMinutes * 60 * 1000
+  };
+  
+  console.log(`🔧 Restart alert configuration updated:`, this.restartAlertConfig);
+}
+
+cleanupOldPodTracking() {
+  const now = new Date();
+  const maxAge = 30 * 60 * 1000; // 30 minutes
+  
+  for (const [podKey, data] of this.podRestartTracking) {
+    const age = now.getTime() - data.lastSeen.getTime();
+    if (age > maxAge) {
+      console.log(`🗑️ Cleaning up old pod tracking: ${podKey} (last seen ${Math.round(age / 60000)} minutes ago)`);
+      this.podRestartTracking.delete(podKey);
+    }
+  }
+}
+async sendPodRestartEmail(pod, restartsIncrease, emailGroupId) {
+  try {
+    const groups = emailService.getEmailGroups();
+    const targetGroup = groups.find(g => g.id == emailGroupId);
+    
+    if (!targetGroup || !targetGroup.enabled) {
+      console.log('❌ Email group not found or disabled for restart alert');
+      return;
+    }
+
+    const podKey = `${pod.namespace}/${pod.name}`;
+    const totalRestarts = pod.restarts || 0;
+    const timestamp = new Date();
+
+    const subject = `🔄 Kubernetes Pod Restart Alert: ${pod.name}`;
+
+    const mailOptions = {
+      from: emailService.getEmailConfig().user,
+      to: targetGroup.emails,
+      subject: subject,
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <div style="background-color: #ff7f00; color: white; padding: 20px; text-align: center;">
+            <h1 style="margin: 0; font-size: 24px;">🔄 POD RESTART ALERT</h1>
+            <p style="margin: 8px 0 0 0; font-size: 16px;">Kubernetes pod has restarted</p>
+          </div>
+          
+          <div style="background-color: #f8f9fa; padding: 20px;">
+            <h2 style="margin-top: 0; color: #333;">Pod Details</h2>
+            
+            <table style="width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden;">
+              <tbody>
+                <tr style="background-color: #f8f9fa;">
+                  <td style="padding: 12px; font-weight: bold; border-bottom: 1px solid #dee2e6;">Pod Name:</td>
+                  <td style="padding: 12px; border-bottom: 1px solid #dee2e6;">${pod.name}</td>
+                </tr>
+                <tr style="background-color: white;">
+                  <td style="padding: 12px; font-weight: bold; border-bottom: 1px solid #dee2e6;">Namespace:</td>
+                  <td style="padding: 12px; border-bottom: 1px solid #dee2e6;">${pod.namespace}</td>
+                </tr>
+                <tr style="background-color: #f8f9fa;">
+                  <td style="padding: 12px; font-weight: bold; border-bottom: 1px solid #dee2e6;">Current Status:</td>
+                  <td style="padding: 12px; border-bottom: 1px solid #dee2e6;">
+                    <span style="background: ${pod.status === 'Running' ? '#28a745' : '#dc3545'}; color: white; padding: 4px 8px; border-radius: 4px; font-size: 12px;">
+                      ${pod.status}
+                    </span>
+                  </td>
+                </tr>
+                <tr style="background-color: white;">
+                  <td style="padding: 12px; font-weight: bold; border-bottom: 1px solid #dee2e6;">New Restarts:</td>
+                  <td style="padding: 12px; border-bottom: 1px solid #dee2e6;">
+                    <span style="background: #ff7f00; color: white; padding: 4px 8px; border-radius: 4px; font-weight: bold;">
+                      +${restartsIncrease}
+                    </span>
+                  </td>
+                </tr>
+                <tr style="background-color: #f8f9fa;">
+                  <td style="padding: 12px; font-weight: bold; border-bottom: 1px solid #dee2e6;">Total Restarts:</td>
+                  <td style="padding: 12px; border-bottom: 1px solid #dee2e6;">${totalRestarts}</td>
+                </tr>
+                <tr style="background-color: white;">
+                  <td style="padding: 12px; font-weight: bold; border-bottom: 1px solid #dee2e6;">Node:</td>
+                  <td style="padding: 12px; border-bottom: 1px solid #dee2e6;">${pod.node || 'Unknown'}</td>
+                </tr>
+                <tr style="background-color: #f8f9fa;">
+                  <td style="padding: 12px; font-weight: bold;">Ready:</td>
+                  <td style="padding: 12px;">
+                    <span style="color: ${pod.ready ? '#28a745' : '#dc3545'}; font-weight: bold;">
+                      ${pod.ready ? '✅ Yes' : '❌ No'}
+                    </span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+
+            <div style="background-color: #fff3cd; border: 1px solid #ffeaa7; padding: 15px; margin: 20px 0; border-radius: 4px;">
+              <h3 style="margin-top: 0; color: #856404;">⚠️ Recommended Actions</h3>
+              <ul style="color: #856404; margin: 10px 0;">
+                <li><strong>Check pod logs:</strong> <code>kubectl logs ${pod.namespace}/${pod.name}</code></li>
+                <li><strong>Check pod events:</strong> <code>kubectl describe pod ${pod.name} -n ${pod.namespace}</code></li>
+                <li><strong>Monitor pattern:</strong> Multiple restarts may indicate a deeper issue</li>
+                <li><strong>Resource limits:</strong> Check if pod is hitting memory/CPU limits</li>
+                <li><strong>Health checks:</strong> Verify liveness and readiness probes</li>
+              </ul>
+            </div>
+          </div>
+          
+          <div style="background-color: #e9ecef; padding: 15px; text-align: center; font-size: 12px; color: #6c757d;">
+            <p style="margin: 0;">Restart alert sent to: ${targetGroup.name}</p>
+            <p style="margin: 5px 0 0 0;">Generated at: ${timestamp.toLocaleString()}</p>
+            <p style="margin: 5px 0 0 0;">Kubernetes Pod Restart Monitoring • Individual Pod Alerts</p>
+          </div>
+        </div>
+      `
+    };
+
+    await emailService.transporter.sendMail(mailOptions);
+    console.log(`📧 ✅ Pod restart alert sent for ${podKey}`);
+
+  } catch (error) {
+    console.error(`📧 ❌ Failed to send pod restart alert for ${pod.namespace}/${pod.name}:`, error);
+  }
+}
   async performBaselineCheck() {
     try {
       console.log('📊 Performing baseline health check (no alerts)...');
@@ -227,6 +440,11 @@ class KubernetesMonitoringService {
     // Get current pods directly (simpler approach)
     const currentPods = await kubernetesService.getAllPods();
     console.log(`✅ Retrieved ${currentPods.length} pods from cluster`);
+
+
+    // ADD THIS LINE: Track pod restarts BEFORE workload analysis
+    await this.trackPodRestarts(currentPods, config.emailGroupId);
+
 
     // Group pods by workload for comparison
     const currentWorkloads = this.groupPodsByWorkload(currentPods);

@@ -3447,7 +3447,195 @@ app.delete('/api/kubernetes/snapshot', (req, res) => {
   }
 });
 
+app.get('/api/kubernetes/restart-alerts/config', (req, res) => {
+  try {
+    const monitoringService = require('./services/kubernetesMonitoringService');
+    const config = monitoringService.restartAlertConfig;
+    const status = monitoringService.getStatus();
+    
+    res.json({
+      success: true,
+      data: {
+        enabled: config.enabled,
+        threshold: config.threshold,
+        cooldownMinutes: config.cooldownMs / 60000,
+        trackedPods: status.restartTracking?.trackedPods || 0,
+        isMonitoring: status.isMonitoring
+      }
+    });
+  } catch (error) {
+    console.error('Get restart config error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
 
+// UPDATE restart alert configuration
+app.post('/api/kubernetes/restart-alerts/config', (req, res) => {
+  try {
+    const { enabled, threshold, cooldownMinutes } = req.body;
+    const monitoringService = require('./services/kubernetesMonitoringService');
+    
+    // Validate inputs
+    if (typeof enabled !== 'boolean') {
+      return res.status(400).json({
+        success: false,
+        error: 'enabled must be a boolean'
+      });
+    }
+    
+    if (!Number.isInteger(threshold) || threshold < 1 || threshold > 100) {
+      return res.status(400).json({
+        success: false,
+        error: 'threshold must be an integer between 1 and 100'
+      });
+    }
+    
+    if (!Number.isInteger(cooldownMinutes) || cooldownMinutes < 1 || cooldownMinutes > 1440) {
+      return res.status(400).json({
+        success: false,
+        error: 'cooldownMinutes must be an integer between 1 and 1440 (24 hours)'
+      });
+    }
+    
+    // Update configuration
+    monitoringService.configureRestartAlerts(enabled, threshold, cooldownMinutes);
+    
+    console.log(`🔧 Restart alert config updated via API: enabled=${enabled}, threshold=${threshold}, cooldown=${cooldownMinutes}min`);
+    
+    res.json({
+      success: true,
+      message: 'Restart alert configuration updated successfully',
+      data: {
+        enabled,
+        threshold,
+        cooldownMinutes
+      }
+    });
+  } catch (error) {
+    console.error('Update restart config error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// GET restart alert statistics and tracked pods
+app.get('/api/kubernetes/restart-alerts/stats', (req, res) => {
+  try {
+    const monitoringService = require('./services/kubernetesMonitoringService');
+    const tracking = monitoringService.podRestartTracking;
+    
+    const stats = {
+      totalTrackedPods: tracking.size,
+      config: monitoringService.restartAlertConfig,
+      pods: []
+    };
+    
+    // Get recent restart information
+    for (const [podKey, data] of tracking) {
+      const [namespace, name] = podKey.split('/');
+      stats.pods.push({
+        namespace,
+        name,
+        restarts: data.restarts,
+        lastSeen: data.lastSeen,
+        lastAlertTime: data.lastAlertTime,
+        timeSinceLastAlert: data.lastAlertTime ? 
+          Math.round((new Date().getTime() - data.lastAlertTime.getTime()) / 60000) : null,
+        timeSinceLastSeen: Math.round((new Date().getTime() - data.lastSeen.getTime()) / 60000)
+      });
+    }
+    
+    // Sort by restart count (highest first)
+    stats.pods.sort((a, b) => b.restarts - a.restarts);
+    
+    res.json({
+      success: true,
+      data: stats
+    });
+  } catch (error) {
+    console.error('Get restart stats error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// CLEAR restart alert tracking (useful for testing)
+app.post('/api/kubernetes/restart-alerts/clear', (req, res) => {
+  try {
+    const monitoringService = require('./services/kubernetesMonitoringService');
+    
+    const previousCount = monitoringService.podRestartTracking.size;
+    monitoringService.podRestartTracking.clear();
+    
+    console.log(`🗑️ Cleared ${previousCount} pod restart tracking entries via API`);
+    
+    res.json({
+      success: true,
+      message: `Cleared ${previousCount} pod restart tracking entries`,
+      data: {
+        clearedEntries: previousCount
+      }
+    });
+  } catch (error) {
+    console.error('Clear restart tracking error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// TEST restart alert (manually trigger for testing)
+app.post('/api/kubernetes/restart-alerts/test', async (req, res) => {
+  try {
+    const { namespace, podName, emailGroupId } = req.body;
+    const monitoringService = require('./services/kubernetesMonitoringService');
+    
+    if (!namespace || !podName) {
+      return res.status(400).json({
+        success: false,
+        error: 'namespace and podName are required'
+      });
+    }
+    
+    // Create a mock pod for testing
+    const mockPod = {
+      name: podName,
+      namespace: namespace,
+      status: 'Running',
+      ready: true,
+      restarts: 5,
+      node: 'test-node'
+    };
+    
+    // Send test restart alert
+    await monitoringService.sendPodRestartEmail(mockPod, 1, emailGroupId);
+    
+    console.log(`📧 Test restart alert sent for ${namespace}/${podName}`);
+    
+    res.json({
+      success: true,
+      message: `Test restart alert sent for ${namespace}/${podName}`,
+      data: {
+        pod: mockPod,
+        emailGroupId
+      }
+    });
+  } catch (error) {
+    console.error('Test restart alert error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error('💥 Unhandled error:', err);
