@@ -1,5 +1,5 @@
 // backend/services/podLifecycleService.js - FIXED VERSION
-// This service should take an INITIAL SNAPSHOT and compare everything against it
+// Excludes pods with unready containers from snapshot
 
 const fs = require('fs');
 const path = require('path');
@@ -20,22 +20,43 @@ class PodLifecycleService {
     }
   }
 
-  // Take initial snapshot when server starts
+  // Take initial snapshot when server starts - EXCLUDE UNREADY PODS
   async takeInitialSnapshot(pods) {
     console.log('📸 Taking initial pod snapshot...');
     
+    // Filter out pods that don't have all containers ready
+    const fullyReadyPods = pods.filter(pod => {
+      const readyContainers = pod.readyContainers || 0;
+      const totalContainers = pod.totalContainers || 1;
+      
+      // Only include pods where ALL containers are ready
+      const isFullyReady = readyContainers === totalContainers;
+      
+      if (!isFullyReady) {
+        console.log(`⚠️ Excluding pod ${pod.namespace}/${pod.name} from snapshot (${readyContainers}/${totalContainers} ready)`);
+      }
+      
+      return isFullyReady;
+    });
+    
+    console.log(`📊 Snapshot: Including ${fullyReadyPods.length} fully ready pods out of ${pods.length} total`);
+    
     const snapshot = {
       timestamp: new Date().toISOString(),
-      pods: pods.map(pod => ({
+      totalPodsScanned: pods.length,
+      fullyReadyPodsIncluded: fullyReadyPods.length,
+      excludedUnreadyPods: pods.length - fullyReadyPods.length,
+      pods: fullyReadyPods.map(pod => ({
         name: pod.name,
         namespace: pod.namespace,
         status: pod.status,
         ready: pod.ready,
         restarts: pod.restarts || 0,
         node: pod.node,
-        readyContainers: pod.readyContainers || 0,
+        readyContainers: pod.readyContainers || 1,
         totalContainers: pod.totalContainers || 1,
-        snapshotStatus: 'initial'
+        snapshotStatus: 'initial',
+        wasFullyReady: true
       }))
     };
     
@@ -44,7 +65,7 @@ class PodLifecycleService {
     this.initialSnapshot = snapshot;
     this.isInitialized = true;
     
-    console.log(`✅ Initial snapshot taken with ${snapshot.pods.length} pods`);
+    console.log(`✅ Initial snapshot taken with ${snapshot.pods.length} fully ready pods (excluded ${snapshot.excludedUnreadyPods} unready pods)`);
     return snapshot;
   }
 
@@ -55,7 +76,7 @@ class PodLifecycleService {
         const data = fs.readFileSync(this.snapshotFile, 'utf8');
         this.initialSnapshot = JSON.parse(data);
         this.isInitialized = true;
-        console.log(`📸 Loaded snapshot from ${this.initialSnapshot.timestamp}`);
+        console.log(`📸 Loaded snapshot from ${this.initialSnapshot.timestamp} with ${this.initialSnapshot.pods.length} pods`);
         return this.initialSnapshot;
       }
     } catch (error) {
@@ -70,7 +91,12 @@ class PodLifecycleService {
       this.loadSnapshot();
       if (!this.initialSnapshot) {
         console.warn('⚠️ No initial snapshot available');
-        return currentPods;
+        // If no snapshot, only return fully ready pods
+        return currentPods.filter(pod => {
+          const readyContainers = pod.readyContainers || 0;
+          const totalContainers = pod.totalContainers || 1;
+          return readyContainers === totalContainers;
+        });
       }
     }
 
@@ -83,7 +109,7 @@ class PodLifecycleService {
       currentPodMap.set(key, pod);
     });
 
-    // Check all pods from initial snapshot
+    // Check all pods from initial snapshot (these were all fully ready)
     this.initialSnapshot.pods.forEach(snapshotPod => {
       const key = `${snapshotPod.namespace}/${snapshotPod.name}`;
       const currentPod = currentPodMap.get(key);
@@ -93,7 +119,8 @@ class PodLifecycleService {
         result.push({
           ...currentPod,
           wasInSnapshot: true,
-          snapshotStatus: snapshotPod.status
+          snapshotStatus: snapshotPod.status,
+          wasFullyReadyInSnapshot: true
         });
       } else {
         // Pod was in snapshot but not in current - mark as deleted
@@ -102,12 +129,13 @@ class PodLifecycleService {
           isDeleted: true,
           status: 'Deleted',
           wasInSnapshot: true,
+          wasFullyReadyInSnapshot: true,
           deletedSinceSnapshot: true
         });
       }
     });
 
-    // Check for new pods not in snapshot
+    // Check for new pods not in snapshot - but ONLY include if fully ready
     currentPods.forEach(pod => {
       const key = `${pod.namespace}/${pod.name}`;
       const wasInSnapshot = this.initialSnapshot.pods.some(
@@ -115,16 +143,38 @@ class PodLifecycleService {
       );
       
       if (!wasInSnapshot) {
-        result.push({
-          ...pod,
-          wasInSnapshot: false,
-          isNew: true,
-          createdAfterSnapshot: true
-        });
+        const readyContainers = pod.readyContainers || 0;
+        const totalContainers = pod.totalContainers || 1;
+        const isFullyReady = readyContainers === totalContainers;
+        
+        // Only include new pods if they are fully ready
+        if (isFullyReady) {
+          result.push({
+            ...pod,
+            wasInSnapshot: false,
+            isNew: true,
+            createdAfterSnapshot: true
+          });
+        }
+        // Silently ignore new pods that aren't fully ready
       }
     });
 
     return result;
+  }
+
+  // Check if a pod should be included based on readiness
+  shouldIncludePod(pod) {
+    const readyContainers = pod.readyContainers || 0;
+    const totalContainers = pod.totalContainers || 1;
+    
+    // If pod was in snapshot, always include it (even if now unready or deleted)
+    if (pod.wasInSnapshot) {
+      return true;
+    }
+    
+    // For new pods, only include if fully ready
+    return readyContainers === totalContainers;
   }
 
   // Get statistics comparing to snapshot
@@ -134,18 +184,28 @@ class PodLifecycleService {
         snapshotPods: 0,
         currentPods: currentPods.length,
         deletedPods: 0,
-        newPods: 0
+        newPods: 0,
+        excludedUnreadyPods: 0
       };
     }
 
     const comprehensive = this.getComprehensivePodList(currentPods);
     
+    // Count unready pods that are being excluded
+    const unreadyCurrentPods = currentPods.filter(pod => {
+      const readyContainers = pod.readyContainers || 0;
+      const totalContainers = pod.totalContainers || 1;
+      return readyContainers < totalContainers;
+    });
+    
     return {
       snapshotTime: this.initialSnapshot.timestamp,
       snapshotPods: this.initialSnapshot.pods.length,
+      snapshotExcludedUnready: this.initialSnapshot.excludedUnreadyPods || 0,
       currentPods: comprehensive.filter(p => !p.isDeleted).length,
       deletedPods: comprehensive.filter(p => p.deletedSinceSnapshot).length,
       newPods: comprehensive.filter(p => p.createdAfterSnapshot).length,
+      currentUnreadyExcluded: unreadyCurrentPods.length,
       total: comprehensive.length
     };
   }

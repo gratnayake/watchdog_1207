@@ -3578,6 +3578,39 @@ app.use((req, res) => {
   });
 });
 
+setTimeout(async () => {
+  try {
+    const kubeConfig = kubernetesConfigService.getConfig();
+    
+    if (kubeConfig.isConfigured) {
+      console.log('🚀 Initializing Kubernetes pod snapshot...');
+      
+      // Get all current pods WITH CONTAINER INFO
+      let pods = [];
+      try {
+        // Use the method that includes container details
+        pods = await kubernetesService.getAllPodsWithContainers();
+      } catch (error) {
+        console.log('⚠️ Failed to get pods with containers, trying basic method...');
+        pods = await kubernetesService.getAllPods();
+      }
+      
+      console.log(`📊 Found ${pods.length} total pods in cluster`);
+      
+      // Take initial snapshot (will exclude unready pods)
+      const snapshot = await podLifecycleService.takeInitialSnapshot(pods);
+      
+      console.log('✅ Pod snapshot initialized successfully');
+      console.log(`📸 Snapshot contains ${snapshot.pods.length} fully ready pods`);
+      console.log(`⚠️ Excluded ${snapshot.excludedUnreadyPods} pods with unready containers`);
+      
+    } else {
+      console.log('⚠️ Kubernetes not configured - skipping pod snapshot');
+    }
+  } catch (error) {
+    console.error('❌ Failed to initialize pod snapshot:', error);
+  }
+}, 5000);
 
 setTimeout(() => {
   console.log('🌐 Auto-starting URL monitoring...');
@@ -3620,24 +3653,7 @@ setTimeout(() => {
   }
 }, 2000); // Wait 2 seconds for services to initialize
 
-setTimeout(() => {
-  try {
-    const kubeConfig = kubernetesConfigService.getConfig();
-    if (kubeConfig.isConfigured) {
-      console.log('🔄 Auto-starting pod monitoring...');
-      const started = podMonitoringService.startMonitoring();
-      if (started) {
-        console.log('✅ Pod monitoring started automatically');
-      } else {
-        console.log('⚠️ Pod monitoring failed to start automatically');
-      }
-    } else {
-      console.log('⚠️ Pod monitoring not started - Kubernetes not configured');
-    }
-  } catch (error) {
-    console.error('❌ Failed to auto-start pod monitoring:', error);
-  }
-}, 5000); 
+
 
 setInterval(async () => {
   try {
@@ -3663,27 +3679,6 @@ setTimeout(() => {
   }
 }, 6000);
 
-setTimeout(async () => {
-  try {
-    const kubeConfig = kubernetesConfigService.getConfig();
-    
-    if (kubeConfig.isConfigured) {
-      console.log('🚀 Initializing Kubernetes pod snapshot...');
-      
-      // Get all current pods
-      const pods = await kubernetesService.getAllPods();
-      
-      // Take initial snapshot
-      await podLifecycleService.takeInitialSnapshot(pods);
-      
-      console.log('✅ Pod snapshot initialized successfully');
-    } else {
-      console.log('⚠️ Kubernetes not configured - skipping pod snapshot');
-    }
-  } catch (error) {
-    console.error('❌ Failed to initialize pod snapshot:', error);
-  }
-}, 5000); 
 
 
 app.listen(PORT, () => {
