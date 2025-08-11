@@ -55,6 +55,29 @@ const EnhancedKubernetesMonitor = () => {
   const [namespaces, setNamespaces] = useState([]);
   const [expandedPanels, setExpandedPanels] = useState([]);
 
+  const isPodPartiallyReady = (readinessRatio) => {
+    if (!readinessRatio || typeof readinessRatio !== 'string') return false;
+    
+    const parts = readinessRatio.split('/');
+    if (parts.length !== 2) return false;
+    
+    const ready = parseInt(parts[0]);
+    const total = parseInt(parts[1]);
+    
+    return ready > 0 && ready < total;
+  };
+
+  const isPodNotReady = (readinessRatio) => {
+    if (!readinessRatio || typeof readinessRatio !== 'string') return false;
+    
+    const parts = readinessRatio.split('/');
+    if (parts.length !== 2) return false;
+    
+    const ready = parseInt(parts[0]);
+    const total = parseInt(parts[1]);
+    
+    return ready === 0 && total > 0;
+  };
   // Auto refresh effect
   useEffect(() => {
     let interval;
@@ -233,31 +256,34 @@ const EnhancedKubernetesMonitor = () => {
   // Render pod item with actions
   const renderPodItem = (pod) => {
     
-     let statusColor = getStatusColor(pod.status, pod.isDeleted);
+    const isPartiallyReady = isPodPartiallyReady(pod.readinessRatio || pod.ready);
+    const isNotReady = isPodNotReady(pod.readinessRatio || pod.ready);
+    
+    const statusColor = getStatusColor(pod.status, pod.isDeleted);
     let backgroundColor = 'transparent';
     let borderLeft = 'none';
     let readinessColor = '#52c41a';
 
      if (pod.isMissing) {
-    backgroundColor = '#fff2f0';
-    borderLeft = '4px solid #ff4d4f';
-    readinessColor = '#ff4d4f';
-  } else if (pod.isNotReady) {
-    backgroundColor = '#fff2f0';
-    borderLeft = '2px solid #ff4d4f';
-    readinessColor = '#ff4d4f';
-  } else if (pod.isPartiallyReady) {
-    backgroundColor = '#fff7e6';
-    borderLeft = '3px solid #faad14';
-    readinessColor = '#faad14'; // Orange for partially ready
-  } else if (pod.isNewSinceSnapshot) {
-    backgroundColor = '#f6ffed';
-    borderLeft = '4px solid #52c41a';
-  } else if (pod.isDeleted) {
-    backgroundColor = '#fff2f0';
-    borderLeft = '2px solid #ff4d4f';
-    readinessColor = '#ff4d4f';
-  }
+      backgroundColor = '#fff2f0';
+      borderLeft = '4px solid #ff4d4f';
+      readinessColor = '#ff4d4f';
+    } else if (isNotReady) {
+      backgroundColor = '#fff2f0';
+      borderLeft = '2px solid #ff4d4f';
+      readinessColor = '#ff4d4f';
+    } else if (isPartiallyReady) {
+      backgroundColor = '#fff7e6';
+      borderLeft = '3px solid #faad14';
+      readinessColor = '#faad14'; // Orange for partially ready
+    } else if (pod.isNewSinceSnapshot) {
+      backgroundColor = '#f6ffed';
+      borderLeft = '4px solid #52c41a';
+    } else if (pod.isDeleted) {
+      backgroundColor = '#fff2f0';
+      borderLeft = '2px solid #ff4d4f';
+      readinessColor = '#ff4d4f';
+    }
     
     const actions = [
       <Button
@@ -330,14 +356,14 @@ const EnhancedKubernetesMonitor = () => {
               size="small" 
               style={{ 
                 backgroundColor: pod.isMissing ? '#ff4d4f' : 
-                                pod.isPartiallyReady ? '#faad14' :
-                                pod.isNotReady ? '#ff4d4f' : statusColor, 
+                                isPartiallyReady ? '#faad14' :
+                                isNotReady ? '#ff4d4f' : statusColor, 
                 fontSize: '10px' 
               }}
             >
               {pod.isMissing ? '❌' : 
-               pod.isPartiallyReady ? '⚠️' :
-               pod.isNotReady ? '🔴' :
+               isPartiallyReady ? '⚠️' :
+               isNotReady ? '🔴' :
                pod.name.charAt(0).toUpperCase()}
             </Avatar>
           </Badge>
@@ -349,17 +375,17 @@ const EnhancedKubernetesMonitor = () => {
               delete={pod.isDeleted}
               style={{ 
                 color: pod.isMissing ? '#ff4d4f' : 
-                       pod.isPartiallyReady ? '#faad14' :
-                       pod.isNotReady ? '#ff4d4f' : undefined,
-                fontWeight: pod.isMissing || pod.isPartiallyReady || pod.isNotReady ? 'bold' : undefined 
+                       isPartiallyReady ? '#faad14' :
+                       isNotReady ? '#ff4d4f' : undefined,
+                fontWeight: pod.isMissing || isPartiallyReady || isNotReady ? 'bold' : undefined 
               }}
             >
               {pod.name}
             </Text>
             <Tag 
               color={pod.isMissing ? 'red' : 
-                     pod.isPartiallyReady ? 'orange' :
-                     pod.isNotReady ? 'red' : statusColor} 
+                     isPartiallyReady ? 'orange' :
+                     isNotReady ? 'red' : statusColor} 
               size="small"
             >
               {pod.isMissing ? `MISSING (${pod.missingReason})` : pod.status}
@@ -374,12 +400,12 @@ const EnhancedKubernetesMonitor = () => {
                 NEW
               </Tag>
             )}
-            {pod.isPartiallyReady && (
+            {isPartiallyReady && (
               <Tag color="orange" size="small">
                 PARTIALLY READY
               </Tag>
             )}
-            {pod.isNotReady && !pod.isMissing && (
+            {isNotReady && !pod.isMissing && (
               <Tag color="red" size="small">
                 NOT READY
               </Tag>
@@ -393,7 +419,7 @@ const EnhancedKubernetesMonitor = () => {
               style={{ 
                 fontSize: '12px',
                 color: readinessColor,
-                fontWeight: pod.isPartiallyReady || pod.isNotReady ? 'bold' : 'normal'
+                fontWeight: isPartiallyReady || isNotReady ? 'bold' : 'normal'
               }}
             >
               <DatabaseOutlined /> {pod.readinessRatio || pod.ready || '0/1'} Ready
@@ -409,12 +435,12 @@ const EnhancedKubernetesMonitor = () => {
                 <WarningOutlined /> Missing from current state
               </Text>
             )}
-            {pod.isPartiallyReady && (
+            {isPartiallyReady && (
               <Text style={{ fontSize: '11px', color: '#faad14' }}>
                 <WarningOutlined /> Some containers not ready
               </Text>
             )}
-            {pod.isNotReady && !pod.isMissing && (
+            {isNotReady && !pod.isMissing && (
               <Text type="danger" style={{ fontSize: '11px' }}>
                 <WarningOutlined /> No containers ready
               </Text>
