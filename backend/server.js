@@ -1256,7 +1256,7 @@ app.post('/api/kubernetes/config/test', async (req, res) => {
     kubernetesConfigService.saveConfig(tempConfig);
     
     // Reload and test
-    kubernetesService.setupKubernetesClient();
+    kubernetesService.refreshConfiguration();
     const testResult = await kubernetesService.testConnection();
     
     res.json({ 
