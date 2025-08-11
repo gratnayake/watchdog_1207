@@ -2231,12 +2231,7 @@ app.get('/api/kubernetes/pods/enhanced', async (req, res) => {
       sortBy = 'lastSeen'
     } = req.query;
     
-    console.log('🔍 Enhanced pods request params:', {
-      namespace,
-      includeDeleted: false,
-      maxAge,
-      sortBy
-    });
+    console.log('🔍 Enhanced pods request - Snapshot-based approach');
     
     // Get current pods from Kubernetes
     let currentPods = [];
@@ -2252,114 +2247,122 @@ app.get('/api/kubernetes/pods/enhanced', async (req, res) => {
       console.log('⚠️ Could not fetch current pods from K8s:', k8sError.message);
     }
     
-    // ENHANCED: Update lifecycle tracking (now detects disappearances)
-    console.log('🔄 Updating pod lifecycle with disappearance detection...');
+    // Update lifecycle tracking
     const changes = await podLifecycleService.updatePodLifecycle(currentPods);
-    console.log(`🔄 Lifecycle changes detected: ${changes.length}`);
     
-    // NEW: Check for mass disappearance and send email alerts
-    const disappearanceAlerts = changes.filter(c => c.type === 'mass_disappearance');
-    if (disappearanceAlerts.length > 0) {
-      console.log(`🛑 Processing ${disappearanceAlerts.length} mass disappearance alerts for email...`);
-      
-      // Get Kubernetes configuration for email group
-      const kubeConfig = kubernetesConfigService.getConfig();
-      if (kubeConfig.emailGroupId) {
-        console.log(`📧 Sending disappearance alerts to email group: ${kubeConfig.emailGroupId}`);
-        
-        for (const alert of disappearanceAlerts) {
-          try {
-            await sendPodDisappearanceEmail(alert, kubeConfig.emailGroupId);
-            console.log(`✅ Email sent for ${alert.namespace} disappearance (${alert.podCount} pods)`);
-          } catch (emailError) {
-            console.error(`❌ Failed to send email for ${alert.namespace}:`, emailError.message);
-          }
-        }
-      } else {
-        console.log('⚠️ No email group configured for Kubernetes alerts - skipping email');
-      }
-    }
+    // Get snapshot data from lifecycle service
+    const snapshotPods = podLifecycleService.getSnapshotPods(); // We'll create this method
     
-    // Process current pods and enhance them
     let podsToReturn = [];
     
-    if (currentPods.length > 0) {
-      console.log('✅ Using current Kubernetes pod data directly');
+    if (snapshotPods && snapshotPods.length > 0) {
+      console.log(`📸 Using snapshot as base list: ${snapshotPods.length} pods`);
       
-      podsToReturn = currentPods.filter(currentPod => {
-      if (currentPod.status === 'Completed' || currentPod.status === 'Succeeded') {
-        console.log(`🚫 Filtering out completed pod: ${currentPod.namespace}/${currentPod.name} (${currentPod.status})`);
-        return false;
-      }
-      
-      if (currentPod.readinessRatio && currentPod.readinessRatio.startsWith('0/') && 
-          currentPod.status !== 'Running' && currentPod.status !== 'Pending') {
-        console.log(`🚫 Filtering out non-ready pod: ${currentPod.namespace}/${currentPod.name} (${currentPod.readinessRatio}, ${currentPod.status})`);
-        return false;
-      }
-      
-      return true; // Keep all other pods
-    }).map(currentPod => {
-        let lifecycleData = null;
-        try {
-          const comprehensivePods = podLifecycleService.getComprehensivePodList({
-            includeDeleted: false,
-            namespace: namespace === 'all' ? null : namespace,
-            maxAge: maxAge ? parseInt(maxAge) : null,
-            sortBy
-          });
-          
-          lifecycleData = comprehensivePods.find(lp => 
-            lp.name === currentPod.name && 
-            lp.namespace === currentPod.namespace &&
-            !lp.isDeleted
-          );
-        } catch (error) {
-          console.log('⚠️ Could not get lifecycle data:', error.message);
-        }
+      // Use snapshot pods as the base list
+      podsToReturn = snapshotPods.map(snapshotPod => {
+        // Check if this pod exists in current Kubernetes state
+        const currentPod = currentPods.find(cp => 
+          cp.name === snapshotPod.name && 
+          cp.namespace === snapshotPod.namespace
+        );
         
-        return {
-          name: currentPod.name,
-          namespace: currentPod.namespace,
-          status: currentPod.status,
-          node: currentPod.node || 'unknown',
-          restarts: currentPod.restarts || 0,
-          age: lifecycleData?.age || 'Unknown',
-          containers: currentPod.containers || [],
-          readyContainers: currentPod.readyContainers || 0,
-          totalContainers: currentPod.totalContainers || 1,
-          readinessRatio: currentPod.readinessRatio || '0/1',
-          firstSeen: lifecycleData?.firstSeen || new Date().toISOString(),
-          lastSeen: lifecycleData?.lastSeen || new Date().toISOString(),
-          statusHistory: lifecycleData?.statusHistory || [{
-            status: currentPod.status,
-            timestamp: new Date().toISOString(),
-            event: 'discovered'
-          }],
-          isDeleted: false,
-        };
+        if (currentPod) {
+          // Pod exists - use current data but mark as from snapshot
+          return {
+            ...currentPod,
+            wasInSnapshot: true,
+            isMissing: false,
+            snapshotData: snapshotPod
+          };
+        } else {
+          // Pod missing from current state - highlight it
+          return {
+            ...snapshotPod,
+            wasInSnapshot: true,
+            isMissing: true,
+            missingReason: 'Not found in current cluster state',
+            status: 'Missing',
+            ready: '0/0',
+            readinessRatio: '0/0',
+            containers: snapshotPod.containers || [],
+            isDeleted: true
+          };
+        }
       });
+      
+      // Also add any new pods not in snapshot
+      const newPods = currentPods.filter(currentPod => 
+        !snapshotPods.find(sp => 
+          sp.name === currentPod.name && 
+          sp.namespace === currentPod.namespace
+        )
+      );
+      
+      newPods.forEach(newPod => {
+        podsToReturn.push({
+          ...newPod,
+          wasInSnapshot: false,
+          isMissing: false,
+          isNewSinceSnapshot: true
+        });
+      });
+      
     } else {
-      console.log('⚠️ No current pods found from Kubernetes');
-      podsToReturn = [];
+      console.log('📸 No snapshot found - using current pods');
+      // No snapshot - use current pods
+      podsToReturn = currentPods.map(currentPod => ({
+        ...currentPod,
+        wasInSnapshot: false,
+        isMissing: false,
+        isNewSinceSnapshot: false
+      }));
     }
     
-    // Get statistics
-    const stats = podLifecycleService.getPodStatistics(namespace === 'all' ? null : namespace);
+    // Apply namespace filtering if needed
+    if (namespace !== 'all') {
+      podsToReturn = podsToReturn.filter(pod => pod.namespace === namespace);
+    }
     
-    console.log(`✅ Final pods to send: ${podsToReturn.length}`);
-    console.log(`🔔 Total alerts to send: ${changes.length}`);
+    // Sort pods - prioritize missing pods
+    podsToReturn.sort((a, b) => {
+      // Missing pods first
+      if (a.isMissing && !b.isMissing) return -1;
+      if (!a.isMissing && b.isMissing) return 1;
+      
+      // Then by namespace
+      if (a.namespace !== b.namespace) {
+        return a.namespace.localeCompare(b.namespace);
+      }
+      
+      // Then by name
+      return a.name.localeCompare(b.name);
+    });
+    
+    const missingCount = podsToReturn.filter(p => p.isMissing).length;
+    const newCount = podsToReturn.filter(p => p.isNewSinceSnapshot).length;
+    
+    console.log(`✅ Snapshot-based response: ${podsToReturn.length} total, ${missingCount} missing, ${newCount} new`);
+    
+    // Get statistics
+    const stats = {
+      total: podsToReturn.length,
+      running: podsToReturn.filter(p => p.status === 'Running' && !p.isMissing).length,
+      missing: missingCount,
+      new: newCount,
+      failed: podsToReturn.filter(p => p.status === 'Failed').length
+    };
     
     res.json({
       success: true,
       data: {
         pods: podsToReturn,
-        statistics: {
-          ...stats,
-          deleted: 0,
-          recentlyDeleted: 0
-        },
+        statistics: stats,
         changes: changes,
+        hasSnapshot: !!(snapshotPods && snapshotPods.length > 0),
+        snapshotInfo: snapshotPods ? {
+          count: snapshotPods.length,
+          timestamp: snapshotPods[0]?.snapshotTimestamp
+        } : null,
         timestamp: new Date()
       }
     });
@@ -3272,6 +3275,71 @@ app.post('/api/kubernetes/pod-recovery/check', async (req, res) => {
     });
   } catch (error) {
     console.error('❌ Pod recovery check error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Snapshot management endpoints
+app.post('/api/kubernetes/snapshot/take', async (req, res) => {
+  try {
+    const { name } = req.body;
+    
+    // Get current pods
+    const currentPods = await kubernetesService.getAllPodsWithContainers();
+    
+    // Take snapshot
+    const snapshot = podLifecycleService.takeSnapshot(currentPods, name);
+    
+    res.json({
+      success: true,
+      message: 'Snapshot taken successfully',
+      snapshot: {
+        name: snapshot.name,
+        timestamp: snapshot.timestamp,
+        count: snapshot.totalCount
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+app.get('/api/kubernetes/snapshot/status', (req, res) => {
+  try {
+    const snapshot = podLifecycleService.getCurrentSnapshot();
+    
+    res.json({
+      success: true,
+      hasSnapshot: podLifecycleService.hasSnapshot(),
+      snapshot: snapshot ? {
+        name: snapshot.name,
+        timestamp: snapshot.timestamp,
+        count: snapshot.totalCount
+      } : null
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+app.delete('/api/kubernetes/snapshot', (req, res) => {
+  try {
+    podLifecycleService.clearSnapshot();
+    
+    res.json({
+      success: true,
+      message: 'Snapshot cleared successfully'
+    });
+  } catch (error) {
     res.status(500).json({
       success: false,
       error: error.message

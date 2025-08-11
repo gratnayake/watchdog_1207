@@ -67,6 +67,44 @@ class PodLifecycleService {
     }
   }
 
+  // Add these methods to your podLifecycleService class:
+
+  takeSnapshot(pods, snapshotName = null) {
+    const timestamp = new Date().toISOString();
+    const snapshot = {
+      name: snapshotName || `Snapshot ${new Date().toLocaleString()}`,
+      timestamp: timestamp,
+      pods: pods.map(pod => ({
+        ...pod,
+        snapshotTimestamp: timestamp,
+        snapshotId: `${pod.namespace}/${pod.name}`
+      })),
+      totalCount: pods.length
+    };
+    
+    // Save snapshot to memory (you could also save to file)
+    this.currentSnapshot = snapshot;
+    
+    console.log(`📸 Snapshot taken: ${snapshot.name} with ${pods.length} pods`);
+    return snapshot;
+  }
+
+  getSnapshotPods() {
+    return this.currentSnapshot ? this.currentSnapshot.pods : null;
+  }
+
+  getCurrentSnapshot() {
+    return this.currentSnapshot || null;
+  }
+
+  clearSnapshot() {
+    this.currentSnapshot = null;
+    console.log('🗑️ Snapshot cleared');
+  }
+
+  hasSnapshot() {
+    return !!(this.currentSnapshot && this.currentSnapshot.pods.length > 0);
+  }
   // NEW: Load last known state
   loadLastKnownState() {
     try {
