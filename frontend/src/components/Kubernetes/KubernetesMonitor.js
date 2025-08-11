@@ -320,7 +320,7 @@ const EnhancedKubernetesMonitor = () => {
           description={
             <Space size="large">
               <Text type="secondary" style={{ fontSize: '12px' }}>
-                <DatabaseOutlined /> {pod.ready || '0/1'} Ready
+                <DatabaseOutlined /> {pod.readinessRatio || pod.ready || '0/1'} Ready
               </Text>
               <Text type="secondary" style={{ fontSize: '12px' }}>
                 <NodeIndexOutlined /> {pod.node || 'Unknown'}

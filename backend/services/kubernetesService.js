@@ -205,28 +205,23 @@ class KubernetesService {
     }
   }
 
-  async getAllPodsWithContainers() {
-    if (!this.isConfigured) {
-      throw new Error('Kubernetes client not configured');
+ async getAllPodsWithContainers() {
+  if (!this.isConfigured) {
+    throw new Error('Kubernetes client not configured');
+  }
+
+  try {
+    const config = kubernetesConfigService.getConfig();
+    process.env.KUBECONFIG = config.kubeconfigPath;
+    
+    const response = await this.k8sApi.listPodForAllNamespaces();
+    let podData = response.items || response.body?.items || response.data?.items;
+    
+    if (!podData) {
+      return [];
     }
 
-    try {
-      console.log('🔍 Fetching pods with container details...');
-      
-      // Ensure environment variable is set
-      const config = kubernetesConfigService.getConfig();
-      process.env.KUBECONFIG = config.kubeconfigPath;
-      
-      const response = await this.k8sApi.listPodForAllNamespaces();
-      
-      let podData = response.items || response.body?.items || response.data?.items;
-      
-      if (!podData) {
-        console.log('All pods response structure:', Object.keys(response));
-        return [];
-      }
-
-      const pods = podData.map(pod => {
+    const pods = podData.map(pod => {
       const containerStatuses = pod.status.containerStatuses || [];
       const containers = pod.spec.containers.map(container => {
         const status = containerStatuses.find(cs => cs.name === container.name);
@@ -245,8 +240,8 @@ class KubernetesService {
       return {
         name: pod.metadata.name,
         namespace: pod.metadata.namespace,
-        status: this.getPodStatus(pod), // USE HERE AS WELL!
-        ready: this.getPodReadyStatus(pod),
+        status: pod.status.phase,
+        ready: `${readyContainers}/${totalContainers}`, // Use ratio here too
         restarts: this.getPodRestarts(pod),
         age: this.calculateAge(pod.metadata.creationTimestamp),
         node: pod.spec.nodeName,
@@ -254,19 +249,15 @@ class KubernetesService {
         containers: containers,
         readyContainers: readyContainers,
         totalContainers: totalContainers,
-        readinessRatio: `${readyContainers}/${totalContainers}`,
-        deletionTimestamp: pod.metadata.deletionTimestamp || null
+        readinessRatio: currentPod.readinessRatio || currentPod.ready || '0/1'
       };
     });
 
-      console.log(`✅ Retrieved ${pods.length} pods with container details`);
-      return pods;
-
-    } catch (error) {
-      console.error('❌ Failed to get pods with containers:', error);
-      throw new Error(`Failed to get all pods: ${error.message}`);
-    }
+    return pods;
+  } catch (error) {
+    throw new Error(`Failed to get all pods: ${error.message}`);
   }
+}
 
   
 
