@@ -88,24 +88,16 @@ const EnhancedKubernetesMonitor = () => {
   const groupPodsByDeployment = (podsList) => {
     const workloadMap = new Map();
     
+    // First pass - count ALL pods including deleted ones for original count
     podsList.forEach(pod => {
-      // Skip deleted pods entirely - don't show them
-      if (pod.isDeleted) {
-        return;
-      }
-      
-      // Extract deployment + replicaset (keep the hash, only remove last pod hash)
+      // Extract deployment + replicaset
       let groupName = pod.name;
       let deploymentName = pod.name;
       
-      // Pattern: deployment-name-replicaset-hash-pod-hash
-      // Example: ifsapp-odata-7949dd6859-q9rrc -> group by ifsapp-odata-7949dd6859
       if (pod.name.includes('-')) {
         const parts = pod.name.split('-');
         if (parts.length >= 2) {
-          // Only remove the LAST part (pod hash)
           groupName = parts.slice(0, -1).join('-');
-          // Deployment name is without replicaset and pod hash
           if (parts.length >= 3) {
             deploymentName = parts.slice(0, -2).join('-');
           }
@@ -122,85 +114,45 @@ const EnhancedKubernetesMonitor = () => {
           namespace: pod.namespace,
           isGroup: true,
           children: [],
-          originalCount: 0, // Will be calculated from snapshot info
+          originalCount: 0,
           currentCount: 0,
           readyPods: 0,
           totalContainersReady: 0,
           totalContainersExpected: 0,
-          hasIssues: false
+          hasIssues: false,
+          snapshotPodCount: 0
         });
       }
       
       const workload = workloadMap.get(workloadKey);
       
-      // Add pod as child
-      const childPod = {
-        ...pod,
-        key: `${workloadKey}/${pod.name}`,
-        isChild: true,
-        parentGroup: groupName
-      };
-      
-      workload.children.push(childPod);
-      workload.currentCount++;
-      
-      // Track container readiness
-      const readyContainers = pod.readyContainers || 0;
-      const totalContainers = pod.totalContainers || 1;
-      
-      workload.totalContainersReady += readyContainers;
-      workload.totalContainersExpected += totalContainers;
-      
-      // Check if pod is fully ready
-      if (readyContainers === totalContainers && pod.status === 'Running') {
-        workload.readyPods++;
+      // Count snapshot pods to get original count
+      if (pod.wasInSnapshot) {
+        workload.snapshotPodCount++;
       }
       
-      // Track if this pod was in original snapshot
-      if (pod.wasInSnapshot || pod.wasFullyReadyInSnapshot) {
-        workload.originalCount = Math.max(workload.originalCount, workload.currentCount);
-      }
-    });
-    
-    // Now check for missing pods from snapshot
-    // We need to get the original counts from pods that were marked as deleted
-    podsList.forEach(pod => {
-      if (pod.isDeleted && pod.wasInSnapshot) {
-        // This pod was in snapshot but is now deleted
-        let groupName = pod.name;
-        if (pod.name.includes('-')) {
-          const parts = pod.name.split('-');
-          if (parts.length >= 2) {
-            groupName = parts.slice(0, -1).join('-');
-          }
-        }
+      // Add ALL current pods (including not fully ready ones)
+      if (!pod.isDeleted) {
+        const childPod = {
+          ...pod,
+          key: `${workloadKey}/${pod.name}`,
+          isChild: true,
+          parentGroup: groupName
+        };
         
-        const workloadKey = `${pod.namespace}/${groupName}`;
-        const workload = workloadMap.get(workloadKey);
+        workload.children.push(childPod);
+        workload.currentCount++;
         
-        if (workload) {
-          // Increment original count for deleted pods that were in snapshot
-          workload.originalCount++;
-        } else {
-          // Create a group for completely missing replicasets
-          const deploymentName = pod.name.includes('-') ? 
-            pod.name.split('-').slice(0, -2).join('-') : pod.name;
-            
-          workloadMap.set(workloadKey, {
-            key: workloadKey,
-            replicaSet: groupName,
-            deployment: deploymentName,
-            namespace: pod.namespace,
-            isGroup: true,
-            children: [],
-            originalCount: 1,
-            currentCount: 0,
-            readyPods: 0,
-            totalContainersReady: 0,
-            totalContainersExpected: 0,
-            hasIssues: true,
-            allPodsGone: true
-          });
+        // Track container readiness
+        const readyContainers = pod.readyContainers || 0;
+        const totalContainers = pod.totalContainers || 1;
+        
+        workload.totalContainersReady += readyContainers;
+        workload.totalContainersExpected += totalContainers;
+        
+        // Check if pod is fully ready
+        if (readyContainers === totalContainers && pod.status === 'Running') {
+          workload.readyPods++;
         }
       }
     });
@@ -208,20 +160,18 @@ const EnhancedKubernetesMonitor = () => {
     // Convert to array and calculate status
     const result = [];
     workloadMap.forEach(workload => {
+      // Set original count from snapshot
+      workload.originalCount = workload.snapshotPodCount || workload.currentCount;
+      
       // Calculate if there are issues
-      const missingPods = workload.originalCount > workload.currentCount;
+      const missingPods = workload.currentCount < workload.originalCount;
       const notAllReady = workload.readyPods < workload.currentCount;
       const containersNotReady = workload.totalContainersReady < workload.totalContainersExpected;
       
       workload.hasIssues = missingPods || notAllReady || containersNotReady;
       workload.missingCount = Math.max(0, workload.originalCount - workload.currentCount);
       
-      // Set display counts
-      if (workload.originalCount === 0) {
-        workload.originalCount = workload.currentCount; // New pods not in snapshot
-      }
-      
-      // Only add groups that have pods or had pods in snapshot
+      // Only add groups that have or had pods
       if (workload.children.length > 0 || workload.originalCount > 0) {
         result.push(workload);
       }
