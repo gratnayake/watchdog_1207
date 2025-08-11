@@ -146,32 +146,33 @@ const EnhancedKubernetesMonitor = () => {
     }
   };
 
-  // NEW: Extract base deployment name from pod name
-  const extractBaseName = (podName) => {
-    // For pods like: ifsapp-native-notification-f4d89d9d9-hszqv
-    // Return: ifsapp-native-notification
+  // NEW: Extract ReplicaSet name from pod name (includes hash)
+  const extractReplicaSetName = (podName) => {
+    // For pods like: ifsapp-odata-7949dd6859-9llzn
+    // Return: ifsapp-odata-7949dd6859 (deployment + replicaset hash)
     const parts = podName.split('-');
-    if (parts.length >= 3) {
-      // Remove last 2 parts (replicaset hash + pod hash)
-      return parts.slice(0, -2).join('-');
+    if (parts.length >= 2) {
+      // Remove only the last part (pod hash)
+      return parts.slice(0, -1).join('-');
     }
     return podName;
   };
 
-  // NEW: Group pods by their base deployment name
+  // NEW: Group pods by their ReplicaSet name (deployment + hash)
   const groupPodsByBaseName = (podList) => {
     const grouped = {};
     
     podList.forEach(pod => {
       if (pod.isDeleted) return; // Skip deleted pods
       
-      const baseName = extractBaseName(pod.name);
-      const groupKey = `${pod.namespace}/${baseName}`;
+      const replicaSetName = extractReplicaSetName(pod.name);
+      const groupKey = `${pod.namespace}/${replicaSetName}`;
       
       if (!grouped[groupKey]) {
         grouped[groupKey] = {
           namespace: pod.namespace,
-          baseName: baseName,
+          replicaSetName: replicaSetName,
+          deploymentName: replicaSetName.split('-').slice(0, -1).join('-'), // Extract deployment name for display
           pods: [],
           expectedCount: 0,
           readyCount: 0,
@@ -220,7 +221,7 @@ const EnhancedKubernetesMonitor = () => {
       if (a.hasIssues !== b.hasIssues) {
         return a.hasIssues ? -1 : 1;
       }
-      return a.baseName.localeCompare(b.baseName);
+      return a.replicaSetName.localeCompare(b.replicaSetName);
     });
 
     setGroupedPods(groupedArray);
@@ -465,11 +466,73 @@ const EnhancedKubernetesMonitor = () => {
 
   // NEW: Grouped view functions
   const handleRestartGroup = (group) => {
-    message.info(`Restart functionality for ${group.baseName} - implement as needed`);
+    Modal.confirm({
+      title: 'Restart All Pods in ReplicaSet',
+      content: `Are you sure you want to restart all ${group.totalCount} pods in ${group.replicaSetName}?`,
+      okText: 'Yes, Restart All',
+      cancelText: 'Cancel',
+      onOk: async () => {
+        message.loading('Restarting all pods in group...', 0);
+        
+        try {
+          let successCount = 0;
+          let failCount = 0;
+          
+          for (const pod of group.pods) {
+            try {
+              const result = await kubernetesAPI.restartPod(pod.namespace, pod.name);
+              if (result.success) {
+                successCount++;
+              } else {
+                failCount++;
+              }
+            } catch (error) {
+              failCount++;
+            }
+          }
+          
+          message.destroy();
+          if (failCount === 0) {
+            message.success(`All ${successCount} pods in ${group.replicaSetName} restart initiated`);
+          } else {
+            message.warning(`${successCount} pods restarted successfully, ${failCount} failed`);
+          }
+          
+          setTimeout(loadEnhancedPods, 2000);
+        } catch (error) {
+          message.destroy();
+          message.error(`Failed to restart pods: ${error.message}`);
+        }
+      }
+    });
   };
 
-  // NEW: Render pod details for expanded group rows
-  const renderPodDetails = (pods) => {
+  // NEW: Individual pod restart from grouped view
+  const handleRestartIndividualPod = async (pod, groupName) => {
+    try {
+      setActionLoading(true);
+      message.loading(`Restarting ${pod.name}...`, 0);
+      
+      const result = await kubernetesAPI.restartPod(pod.namespace, pod.name);
+      
+      message.destroy();
+      if (result.success) {
+        message.success(`Pod ${pod.name} restart initiated`);
+        setTimeout(loadEnhancedPods, 2000);
+      } else {
+        message.error(`Failed to restart pod: ${result.error}`);
+      }
+    } catch (error) {
+      message.destroy();
+      console.error('Restart pod error:', error);
+      message.error(`Failed to restart pod: ${error.message}`);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // NEW: Render pod details for expanded group rows with individual actions
+  const renderPodDetails = (pods, groupName) => {
     const detailColumns = [
       {
         title: 'Pod Name',
@@ -531,6 +594,39 @@ const EnhancedKubernetesMonitor = () => {
         render: (node) => (
           <Text style={{ fontSize: '11px' }}>{node || 'Unknown'}</Text>
         )
+      },
+      {
+        title: 'Actions',
+        key: 'actions',
+        render: (_, pod) => (
+          <Space size="small">
+            <Button
+              type="primary"
+              size="small"
+              icon={<ReloadOutlined />}
+              onClick={() => handleRestartIndividualPod(pod, groupName)}
+              disabled={pod.isDeleted || actionLoading}
+              loading={actionLoading}
+            >
+              Restart
+            </Button>
+            <Button
+              size="small"
+              icon={<HistoryOutlined />}
+              onClick={() => handleViewHistory(pod)}
+            >
+              History
+            </Button>
+            <Button
+              size="small"
+              icon={<FileTextOutlined />}
+              onClick={() => handleViewLogs(pod)}
+              disabled={pod.isDeleted}
+            >
+              Logs
+            </Button>
+          </Space>
+        )
       }
     ];
 
@@ -542,6 +638,7 @@ const EnhancedKubernetesMonitor = () => {
         pagination={false}
         size="small"
         style={{ marginTop: 8 }}
+        rowClassName={(pod) => pod.isDeleted ? 'deleted-pod-row' : ''}
       />
     );
   };
@@ -740,8 +837,8 @@ const EnhancedKubernetesMonitor = () => {
   // NEW: Grouped view columns
   const groupColumns = [
     {
-      title: 'Deployment Group',
-      key: 'deployment',
+      title: 'ReplicaSet Group',
+      key: 'replicaset',
       render: (_, group) => (
         <div>
           <Space>
@@ -751,10 +848,10 @@ const EnhancedKubernetesMonitor = () => {
                 fontSize: '14px',
                 color: group.hasIssues ? getGroupStatusColor(group.status) : undefined
               }}>
-                {group.baseName}
+                {group.replicaSetName}
               </Text>
               <div style={{ fontSize: '12px', color: '#666' }}>
-                {group.namespace}
+                {group.namespace} • {group.deploymentName}
               </div>
             </div>
           </Space>
@@ -813,8 +910,18 @@ const EnhancedKubernetesMonitor = () => {
             size="small" 
             icon={<ReloadOutlined />}
             onClick={() => handleRestartGroup(group)}
+            type="primary"
           >
             Restart All
+          </Button>
+          <Button 
+            size="small" 
+            icon={<ExpandOutlined />}
+            onClick={() => {
+              // This will be handled by the expandable table functionality
+            }}
+          >
+            View Pods
           </Button>
         </Space>
       )
@@ -1102,22 +1209,22 @@ const EnhancedKubernetesMonitor = () => {
         </Card>
       ) : (
         /* Grouped Pod Table */
-        <Card title={`Pod Groups (${showHealthyGroups ? groupedPods.length : groupedPods.filter(g => g.hasIssues).length} groups)`}>
+        <Card title={`Pod Groups (${showHealthyGroups ? groupedPods.length : groupedPods.filter(g => g.hasIssues).length} ReplicaSets)`}>
           <Table
             columns={groupColumns}
             dataSource={showHealthyGroups ? groupedPods : groupedPods.filter(g => g.hasIssues)}
-            rowKey={(group) => `${group.namespace}/${group.baseName}`}
+            rowKey={(group) => `${group.namespace}/${group.replicaSetName}`}
             loading={loading}
             pagination={{
               pageSize: 20,
               showSizeChanger: true,
               showQuickJumper: true,
               showTotal: (total, range) => 
-                `${range[0]}-${range[1]} of ${total} groups`,
+                `${range[0]}-${range[1]} of ${total} ReplicaSets`,
             }}
             rowClassName={(group) => group.hasIssues ? 'unhealthy-group-row' : ''}
             expandable={{
-              expandedRowRender: (group) => renderPodDetails(group.pods),
+              expandedRowRender: (group) => renderPodDetails(group.pods, group.replicaSetName),
               expandRowByClick: true,
               rowExpandable: (group) => group.pods.length > 0,
             }}
