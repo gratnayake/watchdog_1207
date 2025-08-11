@@ -425,13 +425,14 @@ const EnhancedKubernetesMonitor = () => {
   };
 
   const getLifecycleStageIcon = (stage) => {
+    if (!stage) return ''; // Return empty string if no stage
     switch (stage) {
       case 'stable': return '🟢';
       case 'starting': return '🟡';
       case 'failed': return '🔴';
       case 'completed': return '🔵';
       case 'deleted': return '🗑️';
-      default: return '❓';
+      default: return '';
     }
   };
 
@@ -547,9 +548,11 @@ const EnhancedKubernetesMonitor = () => {
         return (
           <Space direction="vertical" size="small">
             <div>
-              <span style={{ marginRight: 8 }}>
-                {getLifecycleStageIcon(record.lifecycleStage)}
-              </span>
+              {record.lifecycleStage && (
+                <span style={{ marginRight: 8 }}>
+                  {getLifecycleStageIcon(record.lifecycleStage)}
+                </span>
+              )}
               <Tag color={getStatusColor(record.status, record.isDeleted)}>
                 {record.isDeleted ? 'DELETED' : record.status}
               </Tag>
