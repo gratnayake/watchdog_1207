@@ -73,6 +73,16 @@ class SystemHeartbeatService {
       return false;
     }
   }
+  getConfig() {    
+    this.loadConfig();
+    return {
+      ...this.config,
+      isRunning: this.isRunning,
+      lastHeartbeat: this.lastHeartbeat,
+      nextHeartbeat: this.nextHeartbeat,
+      heartbeatCount: this.heartbeatCount
+    };
+  }
 
   updateConfig(newConfig) {
     // IMPORTANT: Filter out 'enabled' field from updates
