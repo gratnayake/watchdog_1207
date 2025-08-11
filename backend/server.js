@@ -2234,6 +2234,29 @@ app.get('/api/kubernetes/pods/enhanced', async (req, res) => {
     console.log('🔍 Enhanced pods request - Snapshot-based approach');
     
     // Get current pods from Kubernetes
+    function isPodPartiallyReady(readinessRatio) {
+      if (!readinessRatio || typeof readinessRatio !== 'string') return false;
+      
+      const parts = readinessRatio.split('/');
+      if (parts.length !== 2) return false;
+      
+      const ready = parseInt(parts[0]);
+      const total = parseInt(parts[1]);
+      
+      return ready > 0 && ready < total;
+    }
+
+    function isPodNotReady(readinessRatio) {
+      if (!readinessRatio || typeof readinessRatio !== 'string') return false;
+      
+      const parts = readinessRatio.split('/');
+      if (parts.length !== 2) return false;
+      
+      const ready = parseInt(parts[0]);
+      const total = parseInt(parts[1]);
+      
+      return ready === 0 && total > 0;
+    }
     let currentPods = [];
     try {
       console.log('📡 Fetching current pods from Kubernetes...');
@@ -2298,12 +2321,29 @@ app.get('/api/kubernetes/pods/enhanced', async (req, res) => {
       });
       
       // Also add any new pods not in snapshot
-      const newPods = currentPods.filter(currentPod => 
-        !snapshotPods.find(sp => 
+      const newPods = currentPods.filter(currentPod => {
+        // First check if it's not in snapshot
+        const notInSnapshot = !snapshotPods.find(sp => 
           sp.name === currentPod.name && 
           sp.namespace === currentPod.namespace
-        )
-      );
+        );
+        
+        if (!notInSnapshot) return false;
+        
+        // Also filter out completed/succeeded jobs
+        if (currentPod.status === 'Completed' || currentPod.status === 'Succeeded') {
+          console.log(`🚫 Filtering out new completed job: ${currentPod.namespace}/${currentPod.name} (${currentPod.status})`);
+          return false;
+        }
+        
+        // Filter out failed pods
+        if (currentPod.status === 'Failed') {
+          console.log(`🚫 Filtering out new failed pod: ${currentPod.namespace}/${currentPod.name} (${currentPod.status})`);
+          return false;
+        }
+        
+        return true;
+      });
       
       newPods.forEach(newPod => {
         const isPartiallyReady = isPodPartiallyReady(newPod.readinessRatio);
@@ -2322,8 +2362,28 @@ app.get('/api/kubernetes/pods/enhanced', async (req, res) => {
       
     } else {
       console.log('📸 No snapshot found - using current pods');
-      // No snapshot - use current pods
-      podsToReturn = currentPods.map(currentPod => ({
+  
+      // Filter out completed/succeeded jobs and failed pods
+      const filteredPods = currentPods.filter(currentPod => {
+        // Filter out completed/succeeded jobs
+        if (currentPod.status === 'Completed' || currentPod.status === 'Succeeded') {
+          console.log(`🚫 Filtering out completed job: ${currentPod.namespace}/${currentPod.name} (${currentPod.status})`);
+          return false;
+        }
+        
+        // Filter out failed pods
+        if (currentPod.status === 'Failed') {
+          console.log(`🚫 Filtering out failed pod: ${currentPod.namespace}/${currentPod.name} (${currentPod.status})`);
+          return false;
+        }
+        
+        return true; // Keep running and pending pods
+      });
+      
+      console.log(`🔍 Filtered pods: ${currentPods.length} → ${filteredPods.length} (excluded ${currentPods.length - filteredPods.length} completed/failed)`);
+      
+      // No snapshot - use filtered current pods
+      podsToReturn = filteredPods.map(currentPod => ({
         ...currentPod,
         wasInSnapshot: false,
         isMissing: false,
@@ -2471,32 +2531,7 @@ async function sendPodDisappearanceEmail(disappearanceAlert, emailGroupId) {
     return false;
   }
 }
-// Add this helper function at the top of the enhanced endpoint
-function isPodPartiallyReady(readinessRatio) {
-  if (!readinessRatio || typeof readinessRatio !== 'string') return false;
-  
-  const parts = readinessRatio.split('/');
-  if (parts.length !== 2) return false;
-  
-  const ready = parseInt(parts[0]);
-  const total = parseInt(parts[1]);
-  
-  // Pod is partially ready if some containers are ready but not all
-  return ready > 0 && ready < total;
-}
 
-function isPodNotReady(readinessRatio) {
-  if (!readinessRatio || typeof readinessRatio !== 'string') return false;
-  
-  const parts = readinessRatio.split('/');
-  if (parts.length !== 2) return false;
-  
-  const ready = parseInt(parts[0]);
-  const total = parseInt(parts[1]);
-  
-  // Pod is not ready if no containers are ready
-  return ready === 0 && total > 0;
-}
 
 function isPodReadyComplete(pod) {
   // Method 1: Check if pod.ready is true (most reliable)

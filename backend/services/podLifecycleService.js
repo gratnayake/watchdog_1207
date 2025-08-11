@@ -70,10 +70,24 @@ class PodLifecycleService {
   // Add these methods to your podLifecycleService class:
 
   takeSnapshot(pods, snapshotName = null) {
-    const timestamp = new Date().toISOString();
+  const timestamp = new Date().toISOString();
+  
+  // Helper function to check if pod should be included in snapshot
+  const shouldIncludePodInSnapshot = (pod) => {
+    // Exclude completed/succeeded pods (these are jobs that finished)
+    if (pod.status === 'Completed' || pod.status === 'Succeeded') {
+      console.log(`📸 Excluding completed job from snapshot: ${pod.namespace}/${pod.name} (${pod.status})`);
+      return false;
+    }
     
-    // Helper function to check if pod is fully ready
-    const isPodFullyReady = (pod) => {
+    // Exclude failed pods
+    if (pod.status === 'Failed') {
+      console.log(`📸 Excluding failed pod from snapshot: ${pod.namespace}/${pod.name} (${pod.status})`);
+      return false;
+    }
+    
+    // For running pods, check readiness
+    if (pod.status === 'Running') {
       if (!pod.readinessRatio && !pod.ready) return false;
       
       const ratio = pod.readinessRatio || pod.ready;
@@ -86,43 +100,57 @@ class PodLifecycleService {
       const total = parseInt(parts[1]);
       
       // Only include if all containers are ready
-      return ready > 0 && ready === total;
-    };
-    
-    // Filter out pods that are not fully ready
-    const fullyReadyPods = pods.filter(pod => {
-      const isFullyReady = isPodFullyReady(pod);
-      
+      const isFullyReady = ready > 0 && ready === total;
       if (!isFullyReady) {
-        console.log(`📸 Excluding partially ready pod from snapshot: ${pod.namespace}/${pod.name} (${pod.readinessRatio || pod.ready})`);
+        console.log(`📸 Excluding partially ready pod from snapshot: ${pod.namespace}/${pod.name} (${ratio})`);
         return false;
       }
-      
+    }
+    
+    // Include pending pods (they might become ready)
+    if (pod.status === 'Pending') {
       return true;
-    });
+    }
     
-    const snapshot = {
-      name: snapshotName || `Snapshot ${new Date().toLocaleString()}`,
-      timestamp: timestamp,
-      pods: fullyReadyPods.map(pod => ({
-        ...pod,
-        snapshotTimestamp: timestamp,
-        snapshotId: `${pod.namespace}/${pod.name}`
-      })),
-      totalCount: fullyReadyPods.length,
-      originalCount: pods.length,
-      excludedCount: pods.length - fullyReadyPods.length
-    };
-    
-    // Save snapshot to memory
-    this.currentSnapshot = snapshot;
-    
-    console.log(`📸 Snapshot taken: ${snapshot.name}`);
-    console.log(`📸 Included: ${fullyReadyPods.length} fully ready pods`);
-    console.log(`📸 Excluded: ${snapshot.excludedCount} partially ready pods`);
-    
-    return snapshot;
-  }
+    return true;
+  };
+  
+  // Filter pods for snapshot
+  const snapshotReadyPods = pods.filter(pod => {
+    const shouldInclude = shouldIncludePodInSnapshot(pod);
+    return shouldInclude;
+  });
+  
+  const snapshot = {
+    name: snapshotName || `Snapshot ${new Date().toLocaleString()}`,
+    timestamp: timestamp,
+    pods: snapshotReadyPods.map(pod => ({
+      ...pod,
+      snapshotTimestamp: timestamp,
+      snapshotId: `${pod.namespace}/${pod.name}`
+    })),
+    totalCount: snapshotReadyPods.length,
+    originalCount: pods.length,
+    excludedCount: pods.length - snapshotReadyPods.length,
+    excludedReasons: {
+      completed: pods.filter(p => p.status === 'Completed' || p.status === 'Succeeded').length,
+      failed: pods.filter(p => p.status === 'Failed').length,
+      partiallyReady: pods.filter(p => p.status === 'Running' && !shouldIncludePodInSnapshot(p)).length
+    }
+  };
+  
+  // Save snapshot to memory
+  this.currentSnapshot = snapshot;
+  
+  console.log(`📸 Snapshot taken: ${snapshot.name}`);
+  console.log(`📸 Included: ${snapshotReadyPods.length} pods`);
+  console.log(`📸 Excluded: ${snapshot.excludedCount} pods`);
+  console.log(`📸   - Completed/Succeeded: ${snapshot.excludedReasons.completed}`);
+  console.log(`📸   - Failed: ${snapshot.excludedReasons.failed}`);
+  console.log(`📸   - Partially Ready: ${snapshot.excludedReasons.partiallyReady}`);
+  
+  return snapshot;
+}
 
   getSnapshotPods() {
     return this.currentSnapshot ? this.currentSnapshot.pods : null;

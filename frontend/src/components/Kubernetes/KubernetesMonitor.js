@@ -688,8 +688,17 @@ const getSnapshotStats = () => {
             <Alert
               type="info"
               showIcon
-              message={`${snapshot.excludedCount} partially ready pods were excluded from this snapshot`}
-              description="Only fully ready pods (like 2/2, 1/1) are included in snapshots. Partially ready pods (like 1/2, 2/3) are automatically filtered out."
+              message={`${snapshot.excludedCount} pods were excluded from this snapshot`}
+              description={
+                <div>
+                  Excluded pods: 
+                  {snapshot.excludedReasons?.completed > 0 && ` ${snapshot.excludedReasons.completed} completed jobs,`}
+                  {snapshot.excludedReasons?.failed > 0 && ` ${snapshot.excludedReasons.failed} failed pods,`}
+                  {snapshot.excludedReasons?.partiallyReady > 0 && ` ${snapshot.excludedReasons.partiallyReady} partially ready pods.`}
+                  <br />
+                  Only running and fully ready pods are included in snapshots.
+                </div>
+              }
               style={{ marginTop: 12 }}
             />
           )}
