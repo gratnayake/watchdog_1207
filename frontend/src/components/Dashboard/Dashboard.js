@@ -203,7 +203,9 @@ const Dashboard = () => {
     <Text type="secondary">No tablespace data available</Text>
   )}
 </Card>
-          </div>
+
+      <DowntimeTable />
+    </div>
   );
 };
 

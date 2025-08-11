@@ -270,42 +270,119 @@ class RealOracleService {
     }
   }
 
-  async getTablespaceInfo() {
-    try {
-      if (!await this.checkConnection()) {
-        throw new Error('Database connection not available');
-      }
+  // Update the getTablespaceInfo function in backend/services/realOracleService.js with detailed logging:
 
-      // Simpler, faster query
-      const query = `
-        SELECT 
-          tablespace_name,
-          ROUND(used_space * 8192 / 1024 / 1024, 2) as used_mb,
-          ROUND(tablespace_size * 8192 / 1024 / 1024, 2) as total_mb,
-          ROUND(used_percent, 2) as usage_percent
-        FROM dba_tablespace_usage_metrics
-        WHERE tablespace_name NOT LIKE '%TEMP%'
-          AND tablespace_name NOT LIKE '%UNDO%'
-        ORDER BY used_percent DESC
-      `;
-      
-      const result = await this.connection.execute(query);
-      
-      console.log(`📊 Retrieved tablespace data for ${result.rows.length} tablespaces`);
-      
-      return result.rows.map(row => ({
-        name: row[0],
-        usedMB: row[1],
-        totalMB: row[2],
-        freeMB: row[2] - row[1],
-        usagePercent: row[3],
-        status: row[3] > 90 ? 'critical' : row[3] > 75 ? 'warning' : 'normal'
-      }));
-    } catch (error) {
-      console.error('Failed to get tablespace info:', error);
-      return [];
+async getTablespaceInfo() {
+  try {
+    console.log('🔍 Starting getTablespaceInfo...');
+    
+    // Check connection first
+    const connectionCheck = await this.checkConnection();
+    console.log('📊 Connection check result:', connectionCheck);
+    
+    if (!connectionCheck || !connectionCheck.isConnected) {
+      console.error('❌ No database connection available');
+      throw new Error('Database connection not available');
     }
+
+    const query = `
+      SELECT 
+        df.tablespace_name,
+        ROUND(df.bytes / 1024 / 1024, 2) as total_mb,
+        ROUND(NVL(fs.bytes, 0) / 1024 / 1024, 2) as free_mb,
+        ROUND((df.bytes - NVL(fs.bytes, 0)) / 1024 / 1024, 2) as used_mb,
+        ROUND(((df.bytes - NVL(fs.bytes, 0)) / df.bytes) * 100, 2) as usage_percent
+      FROM (
+        SELECT tablespace_name, SUM(bytes) bytes
+        FROM dba_data_files
+        GROUP BY tablespace_name
+      ) df
+      LEFT JOIN (
+        SELECT tablespace_name, SUM(bytes) bytes
+        FROM dba_free_space
+        GROUP BY tablespace_name
+      ) fs ON df.tablespace_name = fs.tablespace_name
+      WHERE df.tablespace_name NOT LIKE '%TEMP%'
+        AND df.tablespace_name NOT LIKE '%UNDO%'
+      ORDER BY usage_percent DESC
+    `;
+    
+    console.log('📝 Executing tablespace query...');
+    const result = await this.connection.execute(query);
+    console.log(`✅ Query executed, got ${result.rows.length} rows`);
+    
+    // Log first few rows for debugging
+    if (result.rows.length > 0) {
+      console.log('📊 Sample data (first 3 rows):');
+      result.rows.slice(0, 3).forEach((row, index) => {
+        console.log(`  Row ${index + 1}:`, row);
+      });
+    } else {
+      console.log('⚠️ Query returned 0 rows - possible permission issue or no tablespaces found');
+    }
+    
+    const mappedData = result.rows.map(row => ({
+      name: row[0],
+      totalMB: row[1],
+      freeMB: row[2],
+      usedMB: row[3],
+      usagePercent: row[4],
+      status: row[4] > 90 ? 'critical' : row[4] > 75 ? 'warning' : 'normal'
+    }));
+    
+    console.log(`📊 Returning ${mappedData.length} tablespaces`);
+    return mappedData;
+    
+  } catch (error) {
+    console.error('❌ Failed to get tablespace info:');
+    console.error('  Error Code:', error.errorNum);
+    console.error('  Error Message:', error.message);
+    console.error('  Full Error:', error);
+    
+    // Check for specific Oracle errors
+    if (error.errorNum === 942) {
+      console.error('  ⚠️ ORA-00942: Table or view does not exist');
+      console.error('  📌 Solution: Grant SELECT privileges on DBA_DATA_FILES and DBA_FREE_SPACE');
+      console.error('  📌 Run as SYSDBA: GRANT SELECT ON dba_data_files TO your_user;');
+      console.error('  📌 Run as SYSDBA: GRANT SELECT ON dba_free_space TO your_user;');
+    }
+    
+    // Try alternative query using USER views instead of DBA views
+    if (error.errorNum === 942 || error.message.includes('ORA-00942')) {
+      console.log('🔄 Attempting fallback query with USER_TABLESPACES...');
+      try {
+        const fallbackQuery = `
+          SELECT 
+            tablespace_name,
+            0 as total_mb,
+            0 as free_mb,
+            0 as used_mb,
+            0 as usage_percent
+          FROM user_tablespaces
+          ORDER BY tablespace_name
+        `;
+        
+        const fallbackResult = await this.connection.execute(fallbackQuery);
+        console.log(`⚠️ Fallback query returned ${fallbackResult.rows.length} tablespaces (limited data)`);
+        
+        return fallbackResult.rows.map(row => ({
+          name: row[0],
+          totalMB: 0,
+          freeMB: 0,
+          usedMB: 0,
+          usagePercent: 0,
+          status: 'unknown',
+          note: 'Limited data - DBA privileges required'
+        }));
+      } catch (fallbackError) {
+        console.error('❌ Fallback query also failed:', fallbackError.message);
+      }
+    }
+    
+    // Return empty array instead of throwing
+    return [];
   }
+}
 
   async getDatabaseSize() {
     try {
