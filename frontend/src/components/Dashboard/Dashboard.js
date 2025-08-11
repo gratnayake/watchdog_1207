@@ -6,7 +6,6 @@ import DowntimeTable from './DowntimeTable';
 import { useAuth } from '../../contexts/AuthContext';
 import { databaseAPI, userAPI, monitoringAPI } from '../../services/api';
 import { useTheme } from '../../contexts/ThemeContext';
-import { Alert, Button } from 'antd';
 
 const { Text } = Typography;
 
@@ -21,19 +20,12 @@ const Dashboard = () => {
   const { isDarkMode } = useTheme();
   const loadTablespaceData = async () => {
   try {
-    console.log('🔍 Loading tablespace data...');
     const response = await databaseAPI.getTablespace();
-    console.log('📊 Tablespace API response:', response);
-    
     if (response.success) {
-      console.log('✅ Tablespace data loaded:', response.data);
-      console.log('📈 Data length:', response.data.length);
       setTablespaceData(response.data);
-    } else {
-      console.error('❌ Tablespace API returned error:', response.error);
     }
   } catch (error) {
-    console.error('❌ Failed to load tablespace data:', error);
+    console.error('Failed to load tablespace data:', error);
   }
 };
 
@@ -85,75 +77,51 @@ const Dashboard = () => {
     }
   };
 
-  useEffect(() => {
-    console.log('🔍 Dashboard mounted, tablespace data length:', tablespaceData.length);
-    console.log('📊 Current tablespace data:', tablespaceData);
-  }, [tablespaceData]);
 
   const getTablespaceChart = () => {
-    console.log('🎯 Rendering tablespace chart with data:', tablespaceData);
-    
-    if (!tablespaceData || tablespaceData.length === 0) {
-      console.log('⚠️ No tablespace data available for chart');
-      return <div style={{ textAlign: 'center', padding: '40px', color: '#666' }}>
-        No tablespace data available
-      </div>;
-    }
+  if (!tablespaceData.length) return null;
 
-    const chartData = tablespaceData.map(ts => {
-      console.log('📊 Processing tablespace:', ts.name, 'Usage:', ts.usagePercent);
-      return {
-        name: ts.name,
-        usage: ts.usagePercent,
-        type: 'Used Space %'
-      };
-    });
+  const chartData = tablespaceData.map(ts => ({
+    name: ts.name,
+    usage: ts.usagePercent,
+    type: 'Used Space %'
+  }));
 
-    console.log('📈 Chart data prepared:', chartData);
-
-    const config = {
-      data: chartData,
-      xField: 'name',
-      yField: 'usage',
-      seriesField: 'type',
-      color: ({ usage }) => {
-        if (usage > 90) return '#ff4d4f';
-        if (usage > 75) return '#fa8c16';
-        return '#52c41a';
-      },
-      point: {
-        size: 5,
-        shape: 'diamond',
-      },
-      theme: isDarkMode ? 'dark' : 'light',
-      xAxis: {
-        label: {
-          style: {
-            fill: isDarkMode ? '#ffffff' : '#000000',
-          },
+  const config = {
+    data: chartData,
+    xField: 'name',
+    yField: 'usage',
+    seriesField: 'type',
+    color: ({ usage }) => {
+      if (usage > 90) return '#ff4d4f';
+      if (usage > 75) return '#fa8c16';
+      return '#52c41a';
+    },
+    point: {
+      size: 5,
+      shape: 'diamond',
+    },
+    // Add theme configuration for dark mode
+    theme: isDarkMode ? 'dark' : 'light',
+    // Add axis styling for dark mode
+    xAxis: {
+      label: {
+        style: {
+          fill: isDarkMode ? '#ffffff' : '#000000',
         },
       },
-      yAxis: {
-        label: {
-          style: {
-            fill: isDarkMode ? '#ffffff' : '#000000',
-          },
+    },
+    yAxis: {
+      label: {
+        style: {
+          fill: isDarkMode ? '#ffffff' : '#000000',
         },
       },
-      height: 280,
-      padding: [20, 20, 50, 60],
-      responsive: true,
-    };
-
-    try {
-      return <Line {...config} />;
-    } catch (error) {
-      console.error('❌ Chart rendering error:', error);
-      return <div style={{ textAlign: 'center', padding: '40px', color: '#ff4d4f' }}>
-        Error rendering chart: {error.message}
-      </div>;
-    }
+    },
   };
+
+  return <Line {...config} />;
+};
 
   return (
     <div>
@@ -200,13 +168,6 @@ const Dashboard = () => {
       </Row>
 {/* Tablespace Usage Chart */}
 <Card title="Tablespace Usage" style={{ marginBottom: 24 }}>
-  <div style={{ marginBottom: 16 }}>
-    <Text type="secondary">
-      Loaded {tablespaceData.length} tablespace{tablespaceData.length !== 1 ? 's' : ''}
-      {tablespaceData.length === 0 && ' - Check database connection and permissions'}
-    </Text>
-  </div>
-  
   {tablespaceData.length > 0 ? (
     <div>
       <div style={{ height: 300, marginBottom: 16 }}>
@@ -239,22 +200,10 @@ const Dashboard = () => {
       </Row>
     </div>
   ) : (
-    <Alert
-      message="No tablespace data available"
-      description="Check database connection, permissions, or wait for data to load"
-      type="info"
-      showIcon
-      action={
-        <Button size="small" onClick={loadTablespaceData}>
-          Retry Loading
-        </Button>
-      }
-    />
+    <Text type="secondary">No tablespace data available</Text>
   )}
 </Card>
-
-      <DowntimeTable />
-    </div>
+          </div>
   );
 };
 

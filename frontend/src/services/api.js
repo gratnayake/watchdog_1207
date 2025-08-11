@@ -81,6 +81,10 @@ export const databaseAPI = {
     const response = await api.get('/api/database/config');
     return response.data;
   },
+  getTablespace: async () => {
+    const response = await api.get('/api/database/tablespace');
+    return response.data;
+  },
 
   // ENHANCED: Save config with thresholds
   saveConfig: async (configData) => {

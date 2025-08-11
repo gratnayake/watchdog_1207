@@ -276,41 +276,34 @@ class RealOracleService {
         throw new Error('Database connection not available');
       }
 
+      // Simpler, faster query
       const query = `
         SELECT 
-          df.tablespace_name,
-          ROUND(df.bytes / 1024 / 1024, 2) as total_mb,
-          ROUND(NVL(fs.bytes, 0) / 1024 / 1024, 2) as free_mb,
-          ROUND((df.bytes - NVL(fs.bytes, 0)) / 1024 / 1024, 2) as used_mb,
-          ROUND(((df.bytes - NVL(fs.bytes, 0)) / df.bytes) * 100, 2) as usage_percent
-        FROM (
-          SELECT tablespace_name, SUM(bytes) bytes
-          FROM dba_data_files
-          GROUP BY tablespace_name
-        ) df
-        LEFT JOIN (
-          SELECT tablespace_name, SUM(bytes) bytes
-          FROM dba_free_space
-          GROUP BY tablespace_name
-        ) fs ON df.tablespace_name = fs.tablespace_name
-        WHERE df.tablespace_name NOT LIKE '%TEMP%'
-          AND df.tablespace_name NOT LIKE '%UNDO%'
-        ORDER BY usage_percent DESC
+          tablespace_name,
+          ROUND(used_space * 8192 / 1024 / 1024, 2) as used_mb,
+          ROUND(tablespace_size * 8192 / 1024 / 1024, 2) as total_mb,
+          ROUND(used_percent, 2) as usage_percent
+        FROM dba_tablespace_usage_metrics
+        WHERE tablespace_name NOT LIKE '%TEMP%'
+          AND tablespace_name NOT LIKE '%UNDO%'
+        ORDER BY used_percent DESC
       `;
       
       const result = await this.connection.execute(query);
       
+      console.log(`📊 Retrieved tablespace data for ${result.rows.length} tablespaces`);
+      
       return result.rows.map(row => ({
         name: row[0],
-        totalMB: row[1],
-        freeMB: row[2],
-        usedMB: row[3],
-        usagePercent: row[4],
-        status: row[4] > 90 ? 'critical' : row[4] > 75 ? 'warning' : 'normal'
+        usedMB: row[1],
+        totalMB: row[2],
+        freeMB: row[2] - row[1],
+        usagePercent: row[3],
+        status: row[3] > 90 ? 'critical' : row[3] > 75 ? 'warning' : 'normal'
       }));
     } catch (error) {
       console.error('Failed to get tablespace info:', error);
-      throw error;
+      return [];
     }
   }
 
