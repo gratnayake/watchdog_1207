@@ -177,6 +177,8 @@ const EnhancedKubernetesMonitor = () => {
           expectedCount: 0,
           readyCount: 0,
           totalCount: 0,
+          totalReadyContainers: 0,
+          totalExpectedContainers: 0,
           hasIssues: false,
           status: 'healthy'
         };
@@ -185,25 +187,37 @@ const EnhancedKubernetesMonitor = () => {
       grouped[groupKey].pods.push(pod);
       grouped[groupKey].totalCount++;
       
-      // Count ready pods
-      if (pod.ready && pod.status === 'Running') {
+      // Count ready containers across all pods
+      const podReadyContainers = pod.readyContainers || 0;
+      const podTotalContainers = pod.totalContainers || 1;
+      
+      grouped[groupKey].totalReadyContainers += podReadyContainers;
+      grouped[groupKey].totalExpectedContainers += podTotalContainers;
+      
+      // Count fully ready pods (all containers ready AND status Running)
+      if (pod.ready && pod.status === 'Running' && podReadyContainers === podTotalContainers) {
         grouped[groupKey].readyCount++;
       }
     });
 
     // Determine expected count and health status for each group
     Object.values(grouped).forEach(group => {
-      // Use the highest current count as expected (or get from deployment if available)
+      // Use the total count as expected
       group.expectedCount = group.totalCount;
       
-      // Check for issues
-      const allPodsReady = group.pods.every(pod => pod.ready && pod.status === 'Running');
-      const hasFailedPods = group.pods.some(pod => pod.status === 'Failed' || pod.status === 'CrashLoopBackOff');
+      // Check for issues based on container readiness
+      const allContainersReady = group.totalReadyContainers === group.totalExpectedContainers;
+      const allPodsRunning = group.pods.every(pod => pod.status === 'Running');
+      const hasFailedPods = group.pods.some(pod => 
+        pod.status === 'Failed' || 
+        pod.status === 'CrashLoopBackOff' ||
+        pod.status === 'Error'
+      );
       
       if (hasFailedPods) {
         group.status = 'critical';
         group.hasIssues = true;
-      } else if (!allPodsReady) {
+      } else if (!allContainersReady || !allPodsRunning) {
         group.status = 'warning';
         group.hasIssues = true;
       } else if (group.readyCount < group.expectedCount) {
@@ -564,15 +578,26 @@ const EnhancedKubernetesMonitor = () => {
         render: (ready, pod) => {
           const readyCount = pod.readyContainers || 0;
           const totalCount = pod.totalContainers || 1;
+          const isFullyReady = ready && readyCount === totalCount;
+          
           return (
             <div>
               <Text style={{ 
-                color: ready ? '#52c41a' : '#ff4d4f',
+                color: isFullyReady ? '#52c41a' : '#ff4d4f',
                 fontWeight: 'bold',
                 fontSize: '12px'
               }}>
                 {readyCount}/{totalCount}
               </Text>
+              {!isFullyReady && (
+                <div style={{ 
+                  fontSize: '10px', 
+                  color: '#ff4d4f',
+                  fontWeight: 'bold'
+                }}>
+                  Not Ready
+                </div>
+              )}
             </div>
           );
         }
@@ -638,7 +663,15 @@ const EnhancedKubernetesMonitor = () => {
         pagination={false}
         size="small"
         style={{ marginTop: 8 }}
-        rowClassName={(pod) => pod.isDeleted ? 'deleted-pod-row' : ''}
+        rowClassName={(pod) => {
+          if (pod.isDeleted) return 'deleted-pod-row';
+          
+          const readyCount = pod.readyContainers || 0;
+          const totalCount = pod.totalContainers || 1;
+          const isFullyReady = pod.ready && readyCount === totalCount;
+          
+          return !isFullyReady ? 'pod-not-ready-row' : '';
+        }}
       />
     );
   };
@@ -874,11 +907,14 @@ const EnhancedKubernetesMonitor = () => {
               <Text style={{ marginLeft: 8, fontSize: '12px' }}>Total</Text>
             </div>
             <Progress
-              percent={Math.round((group.readyCount / group.totalCount) * 100)}
+              percent={Math.round((group.totalReadyContainers / group.totalExpectedContainers) * 100)}
               size="small"
               status={group.hasIssues ? 'exception' : 'success'}
-              format={() => `${group.readyCount}/${group.totalCount}`}
+              format={() => `${group.totalReadyContainers}/${group.totalExpectedContainers}`}
             />
+            <div style={{ fontSize: '10px', color: '#666' }}>
+              Containers Ready
+            </div>
           </Space>
         </div>
       )
@@ -1379,6 +1415,13 @@ const EnhancedKubernetesMonitor = () => {
         }
         .unhealthy-group-row:hover {
           background-color: #ffece8 !important;
+        }
+        .pod-not-ready-row {
+          background-color: #fff7e6 !important;
+          border-left: 2px solid #faad14;
+        }
+        .pod-not-ready-row:hover {
+          background-color: #fff1b8 !important;
         }
       `}</style>
     </div>
