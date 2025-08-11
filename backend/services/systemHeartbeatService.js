@@ -29,6 +29,18 @@ class SystemHeartbeatService {
     this.configPath = path.join(__dirname, '../data/system-heartbeat-config.json');
     
     this.loadConfig();
+    if (fs.existsSync(this.configPath)) {
+    try {
+      const configData = fs.readFileSync(this.configPath, 'utf8');
+      const savedConfig = JSON.parse(configData);
+      if (savedConfig.emailGroupId && !this.config.emailGroupId) {
+        this.config.emailGroupId = savedConfig.emailGroupId;
+        console.log('💓 Set emailGroupId from saved config:', savedConfig.emailGroupId);
+      }
+    } catch (error) {
+      console.error('Failed to ensure emailGroupId:', error);
+    }
+  }
     console.log('💓 System Heartbeat Service initialized');
   }
 
@@ -59,22 +71,55 @@ class SystemHeartbeatService {
       const dataDir = path.dirname(this.configPath);
       if (!fs.existsSync(dataDir)) {
         fs.mkdirSync(dataDir, { recursive: true });
+        console.log('📁 Created data directory:', dataDir);
       }
       
       // IMPORTANT: Never save 'enabled' field - only save configuration
-      const configToSave = { ...this.config };
+      const configToSave = { 
+        ...this.config,
+        lastUpdated: new Date().toISOString()
+      };
       delete configToSave.enabled; // Ensure enabled is never saved
       
+      console.log('💾 DEBUG - Saving config to file:', this.configPath);
+      console.log('💾 DEBUG - Config to save:', JSON.stringify(configToSave, null, 2));
+      
       fs.writeFileSync(this.configPath, JSON.stringify(configToSave, null, 2));
+      
+      // VERIFY the file was written
+      if (fs.existsSync(this.configPath)) {
+        const writtenData = fs.readFileSync(this.configPath, 'utf8');
+        console.log('✅ Config saved successfully. File contents:', writtenData);
+      } else {
+        console.error('❌ Config file does not exist after write attempt');
+        return false;
+      }
+      
       console.log('💓 System heartbeat config saved (without enabled field)');
       return true;
     } catch (error) {
       console.error('❌ Failed to save system heartbeat config:', error);
+      console.error('❌ Error details:', error.message);
+      console.error('❌ Config path:', this.configPath);
       return false;
     }
   }
+
+
   getConfig() {    
     this.loadConfig();
+    if (!this.config.emailGroupId && fs.existsSync(this.configPath)) {
+    try {
+      const configData = fs.readFileSync(this.configPath, 'utf8');
+      const savedConfig = JSON.parse(configData);
+      if (savedConfig.emailGroupId) {
+        this.config.emailGroupId = savedConfig.emailGroupId;
+        console.log('🔧 FORCED emailGroupId from saved config:', savedConfig.emailGroupId);
+      }
+    } catch (error) {
+      console.error('Failed to force load emailGroupId:', error);
+    }
+  }
     return {
       ...this.config,
       isRunning: this.isRunning,
@@ -85,11 +130,28 @@ class SystemHeartbeatService {
   }
 
   updateConfig(newConfig) {
-    // IMPORTANT: Filter out 'enabled' field from updates
-    const { enabled, ...configWithoutEnabled } = newConfig;
-    this.config = { ...this.config, ...configWithoutEnabled };
-    return this.saveConfig();
-  }
+  console.log('🔄 DEBUG - Updating config with:', JSON.stringify(newConfig, null, 2));
+  console.log('🔄 DEBUG - Current config before update:', JSON.stringify(this.config, null, 2));
+  
+  // IMPORTANT: Filter out 'enabled' field from updates but keep everything else
+  const { enabled, ...configWithoutEnabled } = newConfig;
+  
+  // Make sure we're properly updating the config
+  this.config = { 
+    ...this.config, 
+    ...configWithoutEnabled 
+  };
+  
+  console.log('🔄 DEBUG - Config after merge:', JSON.stringify(this.config, null, 2));
+  
+  const saved = this.saveConfig();
+  console.log('🔄 DEBUG - Save result:', saved);
+  
+  // Verify the config was actually updated
+  console.log('🔄 DEBUG - Final config emailGroupId:', this.config.emailGroupId);
+  
+  return saved;
+}
 
   // SIMPLIFIED: Start monitoring (no enabled check)
   startMonitoring(configOverride = null) {

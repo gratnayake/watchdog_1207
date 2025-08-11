@@ -2885,52 +2885,47 @@ app.get('/api/system/heartbeat/config', (req, res) => {
 // Save heartbeat configuration
 app.post('/api/system/heartbeat/config', (req, res) => {
   try {
-    const configData = req.body;
+    console.log('📝 Heartbeat config request body:', JSON.stringify(req.body, null, 2));
     
-    // Validate required fields
-    if (configData.enabled && !configData.emailGroupId) {
+    const { emailGroupId, intervalMinutes, customMessage } = req.body;
+    
+    if (!emailGroupId) {
       return res.status(400).json({
         success: false,
-        error: 'Email group is required when heartbeat is enabled'
+        error: 'Email group ID is required'
       });
     }
 
-    if (configData.intervalMinutes < 5) {
-      return res.status(400).json({
-        success: false,
-        error: 'Interval must be at least 5 minutes'
-      });
-    }
+    const configData = {
+      emailGroupId: parseInt(emailGroupId), // Make sure it's a number
+      intervalMinutes: intervalMinutes || 60,
+      customMessage: customMessage || ''
+    };
 
-    const saved = systemHeartbeatService.saveConfig(configData);
+    console.log('📝 Config data to save:', JSON.stringify(configData, null, 2));
+
+    const saved = systemHeartbeatService.updateConfig(configData);
     
     if (saved) {
-      // Restart heartbeat service with new config
-      systemHeartbeatService.stopHeartbeat();
+      const currentConfig = systemHeartbeatService.getConfig();
+      console.log('📝 Config after save:', JSON.stringify(currentConfig, null, 2));
       
-      if (configData.enabled) {
-        setTimeout(() => {
-          systemHeartbeatService.startHeartbeat();
-        }, 1000);
-      }
-
-      console.log('💓 Heartbeat configuration saved successfully');
-      res.json({ 
-        success: true, 
-        message: 'Heartbeat configuration saved successfully',
-        data: systemHeartbeatService.getConfig()
+      res.json({
+        success: true,
+        message: 'Heartbeat configuration saved',
+        config: currentConfig
       });
     } else {
-      res.status(500).json({ 
-        success: false, 
-        error: 'Failed to save heartbeat configuration' 
+      res.status(500).json({
+        success: false,
+        error: 'Failed to save configuration'
       });
     }
   } catch (error) {
-    console.error('❌ Save heartbeat config error:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: error.message 
+    console.error('❌ Heartbeat config error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
     });
   }
 });
@@ -2955,7 +2950,7 @@ app.get('/api/system/heartbeat/status', (req, res) => {
 // Start heartbeat manually
 app.post('/api/system/heartbeat/start', (req, res) => {
   try {
-    const started = systemHeartbeatService.startHeartbeat();
+    const started = systemHeartbeatService.startMonitoring();
     
     if (started) {
       res.json({ 
@@ -2980,7 +2975,7 @@ app.post('/api/system/heartbeat/start', (req, res) => {
 // Stop heartbeat manually
 app.post('/api/system/heartbeat/stop', (req, res) => {
   try {
-    const stopped = systemHeartbeatService.stopHeartbeat();
+    const stopped = systemHeartbeatService.stopMonitoring();
     
     res.json({ 
       success: true, 
@@ -3369,7 +3364,7 @@ setTimeout(() => {
   const config = systemHeartbeatService.getConfig();
   if (config.enabled) {
     console.log('💓 Auto-starting system heartbeat service...');
-    const started = systemHeartbeatService.startHeartbeat();
+    const started = systemHeartbeatService.startMonitoring();
     if (started) {
       console.log('✅ System heartbeat started automatically');
     } else {
