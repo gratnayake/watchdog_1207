@@ -3329,7 +3329,7 @@ app.post('/api/kubernetes/snapshot/take', async (req, res) => {
     // Get current pods
     const currentPods = await kubernetesService.getAllPodsWithContainers();
     
-    // Take snapshot
+    // Take snapshot (will automatically exclude partially ready pods)
     const snapshot = podLifecycleService.takeSnapshot(currentPods, name);
     
     res.json({
@@ -3338,8 +3338,13 @@ app.post('/api/kubernetes/snapshot/take', async (req, res) => {
       snapshot: {
         name: snapshot.name,
         timestamp: snapshot.timestamp,
-        count: snapshot.totalCount
-      }
+        includedCount: snapshot.totalCount,
+        excludedCount: snapshot.excludedCount,
+        originalCount: snapshot.originalCount
+      },
+      details: snapshot.excludedCount > 0 ? 
+        `${snapshot.excludedCount} partially ready pods were excluded from the snapshot` : 
+        'All pods were fully ready and included in the snapshot'
     });
   } catch (error) {
     res.status(500).json({

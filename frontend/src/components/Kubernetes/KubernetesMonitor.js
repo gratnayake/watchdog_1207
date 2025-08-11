@@ -54,6 +54,9 @@ const EnhancedKubernetesMonitor = () => {
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [namespaces, setNamespaces] = useState([]);
   const [expandedPanels, setExpandedPanels] = useState([]);
+  const [snapshot, setSnapshot] = useState(null);
+  const [showMissingOnly, setShowMissingOnly] = useState(false);
+  const [snapshotName, setSnapshotName] = useState('');
 
   const isPodPartiallyReady = (readinessRatio) => {
     if (!readinessRatio || typeof readinessRatio !== 'string') return false;
@@ -78,6 +81,85 @@ const EnhancedKubernetesMonitor = () => {
     
     return ready === 0 && total > 0;
   };
+
+  // Take snapshot of current pods
+const takeSnapshot = async () => {
+  try {
+    const snapshotData = {
+      name: snapshotName || `Snapshot ${new Date().toLocaleString()}`
+    };
+    
+    const response = await fetch('/api/kubernetes/snapshot/take', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(snapshotData)
+    });
+    
+    const result = await response.json();
+    
+    if (result.success) {
+      setSnapshot({
+        name: result.snapshot.name,
+        timestamp: result.snapshot.timestamp,
+        original: result.snapshot.includedCount,
+        excludedCount: result.snapshot.excludedCount
+      });
+      setSnapshotName('');
+      
+      if (result.snapshot.excludedCount > 0) {
+        message.warning(`Snapshot taken! ${result.snapshot.excludedCount} partially ready pods were excluded.`);
+      } else {
+        message.success(`Snapshot taken: ${result.snapshot.name}`);
+      }
+      
+      console.log('📸 Snapshot taken:', result);
+    } else {
+      message.error('Failed to take snapshot');
+    }
+  } catch (error) {
+    console.error('Snapshot error:', error);
+    message.error('Failed to take snapshot');
+  }
+};
+
+// Clear snapshot
+const clearSnapshot = async () => {
+  try {
+    const response = await fetch('/api/kubernetes/snapshot', {
+      method: 'DELETE'
+    });
+    
+    const result = await response.json();
+    
+    if (result.success) {
+      setSnapshot(null);
+      setShowMissingOnly(false);
+      message.info('Snapshot cleared');
+    } else {
+      message.error('Failed to clear snapshot');
+    }
+  } catch (error) {
+    console.error('Clear snapshot error:', error);
+    message.error('Failed to clear snapshot');
+  }
+};
+
+// Get snapshot statistics
+const getSnapshotStats = () => {
+  if (!snapshot) return null;
+  
+  const missingPods = pods.filter(p => p.isMissing);
+  const currentRunning = pods.filter(p => p.status === 'Running' && !p.isDeleted).length;
+  
+  return {
+    original: snapshot.original,
+    missing: missingPods.length,
+    current: pods.length,
+    recovered: currentRunning
+  };
+};
   // Auto refresh effect
   useEffect(() => {
     let interval;
@@ -558,6 +640,61 @@ const EnhancedKubernetesMonitor = () => {
       )}
 
       {/* Control Panel */}
+      {snapshot && (
+        <Card style={{ marginBottom: 16, backgroundColor: '#f0f8ff', border: '1px solid #1890ff' }}>
+          <Row gutter={[16, 16]} align="middle">
+            <Col xs={24} md={8}>
+              <Space>
+                <Text strong style={{ color: '#1890ff' }}>📸 Snapshot Active:</Text>
+                <Text>{snapshot.name}</Text>
+              </Space>
+            </Col>
+            <Col xs={24} md={8}>
+              <Space size="large">
+                {(() => {
+                  const stats = getSnapshotStats();
+                  return (
+                    <>
+                      <Text type="success">Included: {stats.original}</Text>
+                      <Text type="danger">Missing: {stats.missing}</Text>
+                      <Text type="secondary">Current: {stats.current}</Text>
+                      {snapshot.excludedCount > 0 && (
+                        <Text type="warning">Excluded: {snapshot.excludedCount}</Text>
+                      )}
+                    </>
+                  );
+                })()}
+              </Space>
+            </Col>
+            <Col xs={24} md={8}>
+              <Space>
+                <Switch
+                  checked={showMissingOnly}
+                  onChange={setShowMissingOnly}
+                  checkedChildren="Missing Only"
+                  unCheckedChildren="Show All"
+                />
+                <Button
+                  size="small"
+                  onClick={clearSnapshot}
+                  icon={<StopOutlined />}
+                >
+                  Clear Snapshot
+                </Button>
+              </Space>
+            </Col>
+          </Row>
+          {snapshot.excludedCount > 0 && (
+            <Alert
+              type="info"
+              showIcon
+              message={`${snapshot.excludedCount} partially ready pods were excluded from this snapshot`}
+              description="Only fully ready pods (like 2/2, 1/1) are included in snapshots. Partially ready pods (like 1/2, 2/3) are automatically filtered out."
+              style={{ marginTop: 12 }}
+            />
+          )}
+        </Card>
+      )}
       <Card style={{ marginBottom: 24 }}>
         <Row gutter={[16, 16]} align="middle">
           <Col xs={24} md={6}>
@@ -622,9 +759,38 @@ const EnhancedKubernetesMonitor = () => {
             </Space>
           </Col>
 
+          <Col xs={24} md={6}>
+            <Space>
+              <input
+                type="text"
+                placeholder="Snapshot name..."
+                value={snapshotName}
+                onChange={(e) => setSnapshotName(e.target.value)}
+                style={{ 
+                  padding: '4px 8px', 
+                  borderRadius: '4px', 
+                  border: '1px solid #d9d9d9',
+                  fontSize: '12px',
+                  width: '120px'
+                }}
+              />
+              <Button
+                icon={<EyeOutlined />}
+                onClick={takeSnapshot}
+                type="primary"
+                size="small"
+              >
+                Snapshot
+              </Button>
+            </Space>
+          </Col>
+
           <Col xs={24} md={4}>
             <Text type="secondary" style={{ fontSize: '12px' }}>
               Last updated: {new Date().toLocaleTimeString()}
+              {snapshot && (
+                <div>Snapshot: {snapshot.timestamp}</div>
+              )}
             </Text>
           </Col>
         </Row>

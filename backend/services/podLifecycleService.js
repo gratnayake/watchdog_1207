@@ -71,21 +71,56 @@ class PodLifecycleService {
 
   takeSnapshot(pods, snapshotName = null) {
     const timestamp = new Date().toISOString();
+    
+    // Helper function to check if pod is fully ready
+    const isPodFullyReady = (pod) => {
+      if (!pod.readinessRatio && !pod.ready) return false;
+      
+      const ratio = pod.readinessRatio || pod.ready;
+      if (typeof ratio !== 'string') return false;
+      
+      const parts = ratio.split('/');
+      if (parts.length !== 2) return false;
+      
+      const ready = parseInt(parts[0]);
+      const total = parseInt(parts[1]);
+      
+      // Only include if all containers are ready
+      return ready > 0 && ready === total;
+    };
+    
+    // Filter out pods that are not fully ready
+    const fullyReadyPods = pods.filter(pod => {
+      const isFullyReady = isPodFullyReady(pod);
+      
+      if (!isFullyReady) {
+        console.log(`📸 Excluding partially ready pod from snapshot: ${pod.namespace}/${pod.name} (${pod.readinessRatio || pod.ready})`);
+        return false;
+      }
+      
+      return true;
+    });
+    
     const snapshot = {
       name: snapshotName || `Snapshot ${new Date().toLocaleString()}`,
       timestamp: timestamp,
-      pods: pods.map(pod => ({
+      pods: fullyReadyPods.map(pod => ({
         ...pod,
         snapshotTimestamp: timestamp,
         snapshotId: `${pod.namespace}/${pod.name}`
       })),
-      totalCount: pods.length
+      totalCount: fullyReadyPods.length,
+      originalCount: pods.length,
+      excludedCount: pods.length - fullyReadyPods.length
     };
     
-    // Save snapshot to memory (you could also save to file)
+    // Save snapshot to memory
     this.currentSnapshot = snapshot;
     
-    console.log(`📸 Snapshot taken: ${snapshot.name} with ${pods.length} pods`);
+    console.log(`📸 Snapshot taken: ${snapshot.name}`);
+    console.log(`📸 Included: ${fullyReadyPods.length} fully ready pods`);
+    console.log(`📸 Excluded: ${snapshot.excludedCount} partially ready pods`);
+    
     return snapshot;
   }
 
