@@ -2273,6 +2273,27 @@ app.get('/api/kubernetes/pods/enhanced', async (req, res) => {
     // Update lifecycle tracking
     const changes = await podLifecycleService.updatePodLifecycle(currentPods);
     
+    const disappearanceAlerts = changes.filter(c => c.type === 'mass_disappearance');
+      if (disappearanceAlerts.length > 0) {
+        console.log(`🛑 Processing ${disappearanceAlerts.length} mass disappearance alerts for email...`);
+        
+        // Get Kubernetes configuration for email group
+        const kubeConfig = kubernetesConfigService.getConfig();
+        if (kubeConfig.emailGroupId) {
+          console.log(`📧 Sending disappearance alerts to email group: ${kubeConfig.emailGroupId}`);
+          
+          for (const alert of disappearanceAlerts) {
+            try {
+              await sendPodDisappearanceEmail(alert, kubeConfig.emailGroupId);
+              console.log(`✅ Email sent for ${alert.namespace} disappearance (${alert.podCount} pods)`);
+            } catch (emailError) {
+              console.error(`❌ Failed to send email for ${alert.namespace}:`, emailError.message);
+            }
+          }
+        } else {
+          console.log('⚠️ No email group configured for Kubernetes alerts - skipping email');
+        }
+      }
     // Get snapshot data from lifecycle service
     const snapshotPods = podLifecycleService.getSnapshotPods(); // We'll create this method
     
