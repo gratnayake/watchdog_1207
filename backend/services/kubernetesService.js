@@ -397,9 +397,12 @@ class KubernetesService {
   }
 
   getPodReadyStatus(pod) {
-    const conditions = pod.status.conditions || [];
-    const readyCondition = conditions.find(c => c.type === 'Ready');
-    return readyCondition ? readyCondition.status === 'True' : false;
+    const containerStatuses = pod.status.containerStatuses || [];
+    const readyContainers = containerStatuses.filter(status => status.ready).length;
+    const totalContainers = containerStatuses.length;
+    
+    // Return the ratio format that matches kubectl output
+    return `${readyContainers}/${totalContainers}`;
   }
 
   getPodRestarts(pod) {
