@@ -204,7 +204,6 @@ const Dashboard = () => {
   )}
 </Card>
 
-      <DowntimeTable />
     </div>
   );
 };
