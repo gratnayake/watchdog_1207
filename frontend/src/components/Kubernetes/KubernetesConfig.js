@@ -382,41 +382,9 @@ const KubernetesConfig = () => {
                 style={{ width: '100%' }}
                 placeholder="e.g., 30"
               />
-            </Form.Item>
+            </Form.Item>         
 
-            <Divider orientation="left">Alert Types</Divider>
-
-            <Row gutter={16}>
-              <Col xs={24} md={8}>
-                <Form.Item
-                  name="alertOnPodStops"
-                  valuePropName="checked"
-                >
-                  <Switch size="small" />
-                  <Text style={{ marginLeft: 8 }}>Pod Stops/Scaling</Text>
-                </Form.Item>
-              </Col>
-              <Col xs={24} md={8}>
-                <Form.Item
-                  name="alertOnPodFailures"
-                  valuePropName="checked"
-                >
-                  <Switch size="small" />
-                  <Text style={{ marginLeft: 8 }}>Pod Failures</Text>
-                </Form.Item>
-              </Col>
-              <Col xs={24} md={8}>
-                <Form.Item
-                  name="alertOnNodeIssues"
-                  valuePropName="checked"
-                >
-                  <Switch size="small" />
-                  <Text style={{ marginLeft: 8 }}>Node Issues</Text>
-                </Form.Item>
-              </Col>
-            </Row>
-
-            <Divider />
+            
 
             <Space>
               <Button 

@@ -257,12 +257,12 @@ class SystemHeartbeatService {
     return `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
         <div style="background-color: #52c41a; color: white; padding: 20px; text-align: center;">
-          <h1 style="margin: 0;">💓 System Heartbeat</h1>
+          <h1 style="margin: 0;">💓 Monitoring Heartbeat</h1>
           <p style="margin: 5px 0 0 0; opacity: 0.9;">Uptime WatchDog is Running</p>
         </div>
         
         <div style="padding: 20px; background-color: #f6ffed; border-left: 5px solid #52c41a;">
-          <h2 style="color: #52c41a; margin-top: 0;">✅ System Status: HEALTHY</h2>
+          <h2 style="color: #52c41a; margin-top: 0;">✅ Monitoring Status: HEALTHY</h2>
           
           <table style="width: 100%; border-collapse: collapse; margin: 15px 0;">
             <tr>
@@ -284,7 +284,7 @@ class SystemHeartbeatService {
           </table>
           
           <div style="background-color: #d4edda; border: 1px solid #c3e6cb; padding: 15px; margin: 15px 0; border-radius: 4px;">
-            <h3 style="margin-top: 0; color: #155724;">🛡️ System Health Check</h3>
+            <h3 style="margin-top: 0; color: #155724;">🛡️ IFS System Health Check</h3>
             <p style="color: #155724; margin: 0;">
               ✅ Application is running normally<br/>
               ✅ Email system is operational<br/>
