@@ -411,6 +411,66 @@ class PodLifecycleService {
     console.log(`✅ Initial snapshot created with ${changes.length} pods`);
     return changes;
   }
+
+  // NEW: Get snapshot statistics (missing method that server.js is calling)
+  getSnapshotStatistics() {
+    try {
+      const history = this.loadHistory();
+      const now = new Date();
+      
+      const stats = {
+        totalPods: history.pods ? history.pods.length : 0,
+        activePods: 0,
+        deletedPods: 0,
+        podsWithReadinessIssues: 0,
+        lastUpdated: history.lastUpdated || null,
+        snapshotAge: null
+      };
+
+      if (history.pods) {
+        // Count active vs deleted pods
+        stats.activePods = history.pods.filter(p => !p.isDeleted).length;
+        stats.deletedPods = history.pods.filter(p => p.isDeleted).length;
+        
+        // Count pods with readiness issues
+        stats.podsWithReadinessIssues = history.pods.filter(p => {
+          if (p.isDeleted) return false;
+          if (!p.readinessRatio) return false;
+          const [ready, total] = p.readinessRatio.split('/').map(Number);
+          return ready < total;
+        }).length;
+      }
+
+      // Calculate snapshot age
+      if (history.lastUpdated) {
+        const lastUpdate = new Date(history.lastUpdated);
+        const ageMs = now - lastUpdate;
+        const ageMinutes = Math.floor(ageMs / 60000);
+        const ageHours = Math.floor(ageMinutes / 60);
+        
+        if (ageHours > 0) {
+          stats.snapshotAge = `${ageHours}h ${ageMinutes % 60}m`;
+        } else {
+          stats.snapshotAge = `${ageMinutes}m`;
+        }
+      }
+
+      console.log(`📊 Snapshot statistics: ${stats.activePods} active, ${stats.deletedPods} deleted, ${stats.podsWithReadinessIssues} with issues`);
+      
+      return stats;
+    } catch (error) {
+      console.error('Failed to get snapshot statistics:', error);
+      return {
+        totalPods: 0,
+        activePods: 0,
+        deletedPods: 0,
+        podsWithReadinessIssues: 0,
+        lastUpdated: null,
+        snapshotAge: 'unknown',
+        error: error.message
+      };
+    }
+  }
 }
 
 module.exports = new PodLifecycleService();
