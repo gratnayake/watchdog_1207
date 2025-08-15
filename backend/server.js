@@ -22,6 +22,7 @@ const podRecoveryNotifier = require('./services/podRecoveryNotifier');
 const autoRecoveryRoutes = require('./routes/autoRecovery');
 
 
+
 const { exec } = require('child_process');
 const util = require('util');
 const fs = require('fs');
@@ -3654,6 +3655,37 @@ setTimeout(() => {
 }, 2000); // Wait 2 seconds for services to initialize
 
 
+setTimeout(async () => {
+  const kubernetesConfig = kubernetesConfigService.getConfig();
+  if (kubernetesConfig.isConfigured) {
+    console.log('📸 Creating initial Kubernetes pod snapshot...');
+    
+    try {
+      // Get all current pods with container details
+      const allPods = await kubernetesService.getAllPodsWithContainers();
+      
+      if (allPods && allPods.length > 0) {
+        // Create initial snapshot in pod lifecycle service
+        await podLifecycleService.createInitialSnapshot(allPods);
+        
+        console.log(`✅ Initial snapshot saved: ${allPods.length} pods`);
+        console.log(`📊 Snapshot includes readiness states for all pods`);
+        
+        // Log sample pod to show what's being tracked
+        const samplePod = allPods[0];
+        console.log(`📝 Sample tracked pod: ${samplePod.namespace}/${samplePod.name} - Ready: ${samplePod.readinessRatio}`);
+      } else {
+        console.log('⚠️ No pods found for initial snapshot');
+      }
+      
+    } catch (error) {
+      console.error('❌ Failed to create initial snapshot:', error);
+      console.log('⚠️ Monitoring will create snapshot on first health check');
+    }
+  } else {
+    console.log('⚠️ Kubernetes not configured - skipping initial snapshot');
+  }
+}, 6000);
 
 setInterval(async () => {
   try {

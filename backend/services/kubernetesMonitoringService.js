@@ -441,6 +441,51 @@ async sendPodRestartEmail(pod, restartsIncrease, emailGroupId) {
     const currentPods = await kubernetesService.getAllPods();
     console.log(`✅ Retrieved ${currentPods.length} pods from cluster`);
 
+    try {
+      const currentPodsWithContainers = await kubernetesService.getAllPodsWithContainers();
+      if (currentPodsWithContainers && currentPodsWithContainers.length > 0) {
+        // Update pod lifecycle with readiness tracking
+        const lifecycleChanges = await podLifecycleService.updatePodLifecycle(currentPodsWithContainers);
+        
+        // Process readiness changes
+        for (const change of lifecycleChanges) {
+          if (change.type === 'readiness_change') {
+            const [newReady, newTotal] = change.newReadiness.split('/').map(Number);
+            const [oldReady, oldTotal] = change.oldReadiness.split('/').map(Number);
+            
+            if (newReady < oldReady) {
+              console.log(`⚠️ Pod readiness degraded: ${change.pod.namespace}/${change.pod.name} (${change.oldReadiness} → ${change.newReadiness})`);
+              
+              // Create workload-like object for your existing alert system
+              const degradedWorkload = {
+                type: 'Pod',
+                name: change.pod.name,
+                namespace: change.pod.namespace,
+                readyReplicas: newReady,
+                desiredReplicas: newTotal,
+                status: 'degraded',
+                pods: [{
+                  name: change.pod.name,
+                  ready: false,
+                  status: change.pod.status
+                }]
+              };
+              
+              this.addToBatchAlert('degraded', degradedWorkload, config.emailGroupId, 
+                `Readiness degraded: ${change.oldReadiness} → ${change.newReadiness}`);
+            }
+          }
+          else if (change.type === 'deleted') {
+            console.log(`🗑️ Pod deleted: ${change.pod.namespace}/${change.pod.name} (was ${change.pod.readinessRatio})`);
+            // Your existing deletion handling will catch this through workload grouping
+          }
+        }
+      }
+    } catch (lifecycleError) {
+      console.log('⚠️ Could not update pod lifecycle tracking:', lifecycleError.message);
+      // Continue with existing monitoring even if lifecycle tracking fails
+    }
+
 
     console.log(`🔍 DEBUG: About to call trackPodRestarts with emailGroupId: ${config.emailGroupId}`);
     console.log(`🔍 DEBUG: restartAlertConfig exists:`, !!this.restartAlertConfig);

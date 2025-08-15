@@ -1,5 +1,5 @@
-// backend/services/podLifecycleService.js - FIXED VERSION
-// Excludes pods with unready containers from snapshot
+// backend/services/podLifecycleService.js
+// Enhanced service to track pod lifecycle events including ready state
 
 const fs = require('fs');
 const path = require('path');
@@ -8,10 +8,12 @@ class PodLifecycleService {
   constructor() {
     this.dataDir = path.join(__dirname, '../data');
     this.podHistoryFile = path.join(this.dataDir, 'pod-history.json');
-    this.snapshotFile = path.join(this.dataDir, 'pod-snapshot.json');
     this.ensureDataDirectory();
-    this.initialSnapshot = null;
-    this.isInitialized = false;
+    this.ensureHistoryFile();
+    
+    // In-memory tracking
+    this.knownPods = new Map();
+    this.lastScan = null;
   }
 
   ensureDataDirectory() {
@@ -20,222 +22,394 @@ class PodLifecycleService {
     }
   }
 
-  // Take initial snapshot when server starts - EXCLUDE UNREADY PODS
-  async takeInitialSnapshot(pods) {
-    console.log('📸 Taking initial pod snapshot...');
-    
-    // Filter out pods that don't have all containers ready
-    const fullyReadyPods = pods.filter(pod => {
-      const readyContainers = pod.readyContainers || 0;
-      const totalContainers = pod.totalContainers || 1;
-      
-      // Only include pods where ALL containers are ready
-      const isFullyReady = readyContainers === totalContainers;
-      
-      if (!isFullyReady) {
-        console.log(`⚠️ Excluding pod ${pod.namespace}/${pod.name} from snapshot (${readyContainers}/${totalContainers} ready)`);
-      }
-      
-      return isFullyReady;
-    });
-    
-    console.log(`📊 Snapshot: Including ${fullyReadyPods.length} fully ready pods out of ${pods.length} total`);
-    
-    const snapshot = {
-      timestamp: new Date().toISOString(),
-      totalPodsScanned: pods.length,
-      fullyReadyPodsIncluded: fullyReadyPods.length,
-      excludedUnreadyPods: pods.length - fullyReadyPods.length,
-      pods: fullyReadyPods.map(pod => ({
-        name: pod.name,
-        namespace: pod.namespace,
-        status: pod.status,
-        ready: pod.ready,
-        restarts: pod.restarts || 0,
-        node: pod.node,
-        readyContainers: pod.readyContainers || 1,
-        totalContainers: pod.totalContainers || 1,
-        snapshotStatus: 'initial',
-        wasFullyReady: true
-      }))
-    };
-    
-    // Save snapshot to file
-    fs.writeFileSync(this.snapshotFile, JSON.stringify(snapshot, null, 2));
-    this.initialSnapshot = snapshot;
-    this.isInitialized = true;
-    
-    console.log(`✅ Initial snapshot taken with ${snapshot.pods.length} fully ready pods (excluded ${snapshot.excludedUnreadyPods} unready pods)`);
-    return snapshot;
+  ensureHistoryFile() {
+    if (!fs.existsSync(this.podHistoryFile)) {
+      const defaultHistory = {
+        pods: [],
+        lastUpdated: new Date().toISOString()
+      };
+      this.saveHistory(defaultHistory);
+      console.log('📝 Created pod history file');
+    }
   }
 
-  // Load the initial snapshot
-  loadSnapshot() {
+  loadHistory() {
     try {
-      if (fs.existsSync(this.snapshotFile)) {
-        const data = fs.readFileSync(this.snapshotFile, 'utf8');
-        this.initialSnapshot = JSON.parse(data);
-        this.isInitialized = true;
-        console.log(`📸 Loaded snapshot from ${this.initialSnapshot.timestamp} with ${this.initialSnapshot.pods.length} pods`);
-        return this.initialSnapshot;
-      }
+      const data = fs.readFileSync(this.podHistoryFile, 'utf8');
+      return JSON.parse(data);
     } catch (error) {
-      console.error('Failed to load snapshot:', error);
+      console.error('Failed to load pod history:', error);
+      return { pods: [], lastUpdated: new Date().toISOString() };
     }
-    return null;
   }
 
-  // Get comprehensive pod list comparing current state with initial snapshot
-  getComprehensivePodList(currentPods = []) {
-    if (!this.initialSnapshot) {
-      this.loadSnapshot();
-      if (!this.initialSnapshot) {
-        console.warn('⚠️ No initial snapshot available');
-        return currentPods; // Return all current pods if no snapshot
-      }
+  saveHistory(history) {
+    try {
+      fs.writeFileSync(this.podHistoryFile, JSON.stringify(history, null, 2));
+      return true;
+    } catch (error) {
+      console.error('Failed to save pod history:', error);
+      return false;
     }
+  }
 
-    const result = [];
+  // Enhanced track pod lifecycle changes with ready state
+  async updatePodLifecycle(currentPods) {
+    const now = new Date();
+    const history = this.loadHistory();
+    let changes = [];
+
+    // Create a map of current pods for easy lookup
     const currentPodMap = new Map();
-    const processedReplicaSets = new Set();
-    
-    // Map current pods for quick lookup
     currentPods.forEach(pod => {
-      const key = `${pod.namespace}/${pod.name}`;
-      currentPodMap.set(key, pod);
-      
-      // Track replicaset for this pod
-      if (pod.name.includes('-')) {
-        const parts = pod.name.split('-');
-        if (parts.length >= 2) {
-          const replicaSet = parts.slice(0, -1).join('-');
-          processedReplicaSets.add(`${pod.namespace}/${replicaSet}`);
-        }
-      }
+      const podKey = `${pod.namespace}/${pod.name}`;
+      currentPodMap.set(podKey, pod);
     });
 
-    // Check all pods from initial snapshot
-    this.initialSnapshot.pods.forEach(snapshotPod => {
-      const key = `${snapshotPod.namespace}/${snapshotPod.name}`;
-      const currentPod = currentPodMap.get(key);
-      
-      if (currentPod) {
-        // Pod still exists - use current state
-        result.push({
-          ...currentPod,
-          wasInSnapshot: true,
-          snapshotStatus: snapshotPod.status,
-          wasFullyReadyInSnapshot: true
-        });
-      } else {
-        // Pod was in snapshot but not in current - mark as deleted
-        result.push({
-          ...snapshotPod,
-          isDeleted: true,
-          status: 'Deleted',
-          wasInSnapshot: true,
-          wasFullyReadyInSnapshot: true,
-          deletedSinceSnapshot: true
-        });
-      }
-    });
-
-    // Check for new pods not in snapshot
-    currentPods.forEach(pod => {
-      const key = `${pod.namespace}/${pod.name}`;
-      const wasInSnapshot = this.initialSnapshot.pods.some(
-        sp => sp.namespace === pod.namespace && sp.name === pod.name
+    // Check for new pods or status changes
+    currentPodMap.forEach((pod, podKey) => {
+      const existingPod = history.pods.find(p => 
+        p.namespace === pod.namespace && p.name === pod.name
       );
-      
-      if (!wasInSnapshot) {
-        // Check if this pod belongs to a replicaset that was in the snapshot
-        let belongsToSnapshotReplicaSet = false;
+
+      if (!existingPod) {
+        // New pod discovered with enhanced fields
+        const newPodEntry = {
+          name: pod.name,
+          namespace: pod.namespace,
+          status: pod.status,
+          
+          // NEW: Add readiness tracking
+          readyContainers: pod.readyContainers || 0,
+          totalContainers: pod.totalContainers || 1,
+          readinessRatio: pod.readinessRatio || '0/1',
+          containers: pod.containers || [],
+          
+          firstSeen: now.toISOString(),
+          lastSeen: now.toISOString(),
+          statusHistory: [{
+            status: pod.status,
+            readiness: pod.readinessRatio || '0/1', // Track readiness in history
+            timestamp: now.toISOString(),
+            event: 'created'
+          }],
+          isDeleted: false,
+          restarts: pod.restarts || 0,
+          node: pod.node || 'unknown'
+        };
         
-        if (pod.name.includes('-')) {
-          const parts = pod.name.split('-');
-          if (parts.length >= 2) {
-            const replicaSet = parts.slice(0, -1).join('-');
-            
-            // Check if any pod from this replicaset was in the snapshot
-            belongsToSnapshotReplicaSet = this.initialSnapshot.pods.some(sp => {
-              if (sp.name.includes('-')) {
-                const spParts = sp.name.split('-');
-                if (spParts.length >= 2) {
-                  const spReplicaSet = spParts.slice(0, -1).join('-');
-                  return spReplicaSet === replicaSet && sp.namespace === pod.namespace;
-                }
-              }
-              return false;
-            });
-          }
+        history.pods.push(newPodEntry);
+        changes.push({
+          type: 'created',
+          pod: newPodEntry
+        });
+        
+        console.log(`🆕 New pod discovered: ${podKey} (${newPodEntry.readinessRatio})`);
+      } else {
+        // Update existing pod
+        existingPod.lastSeen = now.toISOString();
+        existingPod.isDeleted = false;
+        
+        // Check for status change
+        if (existingPod.status !== pod.status) {
+          existingPod.statusHistory.push({
+            status: pod.status,
+            readiness: pod.readinessRatio || existingPod.readinessRatio,
+            timestamp: now.toISOString(),
+            event: 'status_change',
+            previousStatus: existingPod.status
+          });
+          
+          console.log(`🔄 Status change for ${podKey}: ${existingPod.status} → ${pod.status}`);
+          
+          changes.push({
+            type: 'status_change',
+            pod: existingPod,
+            oldStatus: existingPod.status,
+            newStatus: pod.status
+          });
+          
+          existingPod.status = pod.status;
         }
         
-        // Include the pod if it belongs to a replicaset that was in snapshot
-        // OR if it's fully ready (for truly new deployments)
-        const readyContainers = pod.readyContainers || 0;
-        const totalContainers = pod.totalContainers || 1;
-        const isFullyReady = readyContainers === totalContainers;
+        // NEW: Check for readiness change
+        const currentReadiness = pod.readinessRatio || '0/0';
+        const previousReadiness = existingPod.readinessRatio || '0/0';
         
-        if (belongsToSnapshotReplicaSet || isFullyReady) {
-          result.push({
-            ...pod,
-            wasInSnapshot: false,
-            isNew: true,
-            createdAfterSnapshot: true,
-            belongsToSnapshotReplicaSet: belongsToSnapshotReplicaSet
+        if (currentReadiness !== previousReadiness) {
+          existingPod.statusHistory.push({
+            status: pod.status,
+            readiness: currentReadiness,
+            timestamp: now.toISOString(),
+            event: 'readiness_change',
+            previousReadiness: previousReadiness
+          });
+          
+          console.log(`⚠️ Readiness change for ${podKey}: ${previousReadiness} → ${currentReadiness}`);
+          
+          changes.push({
+            type: 'readiness_change',
+            pod: existingPod,
+            oldReadiness: previousReadiness,
+            newReadiness: currentReadiness
+          });
+          
+          // Update the stored readiness values
+          existingPod.readinessRatio = currentReadiness;
+          existingPod.readyContainers = pod.readyContainers || 0;
+          existingPod.totalContainers = pod.totalContainers || 1;
+          existingPod.containers = pod.containers || [];
+        }
+        
+        // Update restart count
+        if (pod.restarts !== existingPod.restarts) {
+          existingPod.statusHistory.push({
+            status: pod.status,
+            readiness: pod.readinessRatio || existingPod.readinessRatio,
+            timestamp: now.toISOString(),
+            event: 'restart',
+            restartCount: pod.restarts
+          });
+          existingPod.restarts = pod.restarts;
+          
+          changes.push({
+            type: 'restart',
+            pod: existingPod,
+            restartCount: pod.restarts
+          });
+        }
+        
+        // Update node if changed
+        if (pod.node && pod.node !== existingPod.node) {
+          existingPod.node = pod.node;
+        }
+      }
+    });
+
+    // Check for deleted pods (pods that were there before but not now)
+    const deletionThreshold = 30000; // 30 seconds
+    history.pods.forEach(historicalPod => {
+      const podKey = `${historicalPod.namespace}/${historicalPod.name}`;
+      
+      if (!currentPodMap.has(podKey) && !historicalPod.isDeleted) {
+        // Pod is missing from current scan and not marked as deleted
+        const timeSinceLastSeen = now - new Date(historicalPod.lastSeen);
+        
+        if (timeSinceLastSeen > deletionThreshold) {
+          // Mark as deleted
+          historicalPod.isDeleted = true;
+          historicalPod.deletedAt = now.toISOString();
+          historicalPod.statusHistory.push({
+            status: 'Deleted',
+            readiness: '0/0',
+            timestamp: now.toISOString(),
+            event: 'deleted'
+          });
+          
+          console.log(`🗑️ Pod marked as deleted: ${podKey} (was ${historicalPod.readinessRatio})`);
+          
+          changes.push({
+            type: 'deleted',
+            pod: historicalPod
           });
         }
       }
     });
 
-    return result;
+    // Save updated history
+    history.lastUpdated = now.toISOString();
+    this.saveHistory(history);
+    this.lastScan = now;
+
+    return changes;
   }
 
-  // Check if a pod should be included based on readiness
-  shouldIncludePod(pod) {
-    const readyContainers = pod.readyContainers || 0;
-    const totalContainers = pod.totalContainers || 1;
-    
-    // If pod was in snapshot, always include it (even if now unready or deleted)
-    if (pod.wasInSnapshot) {
-      return true;
-    }
-    
-    // For new pods, only include if fully ready
-    return readyContainers === totalContainers;
-  }
+  // Get comprehensive pod list including deleted ones
+  getComprehensivePodList(options = {}) {
+    const {
+      includeDeleted = true,
+      namespace = null,
+      maxAge = null, // in hours
+      sortBy = 'lastSeen'
+    } = options;
 
-  // Get statistics comparing to snapshot
-  getSnapshotStatistics(currentPods = []) {
-    if (!this.initialSnapshot) {
-      return {
-        snapshotPods: 0,
-        currentPods: currentPods.length,
-        deletedPods: 0,
-        newPods: 0,
-        excludedUnreadyPods: 0
-      };
+    const history = this.loadHistory();
+    let pods = [...history.pods];
+
+    // Filter by namespace if specified
+    if (namespace && namespace !== 'all') {
+      pods = pods.filter(pod => pod.namespace === namespace);
     }
 
-    const comprehensive = this.getComprehensivePodList(currentPods);
-    
-    // Count unready pods that are being excluded
-    const unreadyCurrentPods = currentPods.filter(pod => {
-      const readyContainers = pod.readyContainers || 0;
-      const totalContainers = pod.totalContainers || 1;
-      return readyContainers < totalContainers;
+    // Filter by age if specified
+    if (maxAge) {
+      const cutoffTime = new Date(Date.now() - (maxAge * 60 * 60 * 1000));
+      pods = pods.filter(pod => new Date(pod.lastSeen) > cutoffTime);
+    }
+
+    // Filter deleted pods if not included
+    if (!includeDeleted) {
+      pods = pods.filter(pod => !pod.isDeleted);
+    }
+
+    // Add computed fields
+    pods = pods.map(pod => ({
+      ...pod,
+      age: this.calculateAge(pod.firstSeen),
+      timeSinceLastSeen: this.calculateAge(pod.lastSeen),
+      lifecycleStage: this.getLifecycleStage(pod),
+      statusDuration: this.getStatusDuration(pod)
+    }));
+
+    // Sort pods
+    pods.sort((a, b) => {
+      switch (sortBy) {
+        case 'name':
+          return a.name.localeCompare(b.name);
+        case 'namespace':
+          return a.namespace.localeCompare(b.namespace);
+        case 'status':
+          return a.status.localeCompare(b.status);
+        case 'firstSeen':
+          return new Date(b.firstSeen) - new Date(a.firstSeen);
+        case 'lastSeen':
+        default:
+          return new Date(b.lastSeen) - new Date(a.lastSeen);
+      }
     });
+
+    return pods;
+  }
+
+  calculateAge(timestamp) {
+    const now = new Date();
+    const created = new Date(timestamp);
+    const diffMs = now - created;
     
-    return {
-      snapshotTime: this.initialSnapshot.timestamp,
-      snapshotPods: this.initialSnapshot.pods.length,
-      snapshotExcludedUnready: this.initialSnapshot.excludedUnreadyPods || 0,
-      currentPods: comprehensive.filter(p => !p.isDeleted).length,
-      deletedPods: comprehensive.filter(p => p.deletedSinceSnapshot).length,
-      newPods: comprehensive.filter(p => p.createdAfterSnapshot).length,
-      currentUnreadyExcluded: unreadyCurrentPods.length,
-      total: comprehensive.length
+    const days = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+    const hours = Math.floor((diffMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+    const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+    
+    if (days > 0) return `${days}d ${hours}h`;
+    if (hours > 0) return `${hours}h ${minutes}m`;
+    return `${minutes}m`;
+  }
+
+  getLifecycleStage(pod) {
+    if (pod.isDeleted) return 'deleted';
+    if (pod.status === 'Running') return 'stable';
+    if (pod.status === 'Pending') return 'starting';
+    if (pod.status === 'Failed') return 'failed';
+    if (pod.status === 'Succeeded') return 'completed';
+    return 'unknown';
+  }
+
+  getStatusDuration(pod) {
+    if (pod.statusHistory.length === 0) return '0m';
+    
+    const lastStatusChange = pod.statusHistory[pod.statusHistory.length - 1];
+    return this.calculateAge(lastStatusChange.timestamp);
+  }
+
+  // Enhanced statistics to include readiness
+  getPodStatistics(namespace = null) {
+    const pods = this.getComprehensivePodList({ 
+      namespace, 
+      includeDeleted: true,
+      maxAge: 24 // Last 24 hours
+    });
+
+    const stats = {
+      total: pods.length,
+      running: 0,
+      pending: 0,
+      failed: 0,
+      succeeded: 0,
+      deleted: 0,
+      fullyReady: 0,  // NEW: Pods with all containers ready
+      partiallyReady: 0,  // NEW: Pods with some containers ready
+      notReady: 0,  // NEW: Pods with no containers ready
+      recentlyCreated: 0, // Last hour
+      recentlyDeleted: 0, // Last hour
+      restartEvents: 0,
+      readinessChanges: 0  // NEW: Count of readiness changes
     };
+
+    const oneHourAgo = new Date(Date.now() - (60 * 60 * 1000));
+
+    pods.forEach(pod => {
+      // Count by current status
+      if (pod.isDeleted) {
+        stats.deleted++;
+        if (pod.deletedAt && new Date(pod.deletedAt) > oneHourAgo) {
+          stats.recentlyDeleted++;
+        }
+      } else {
+        switch (pod.status) {
+          case 'Running': stats.running++; break;
+          case 'Pending': stats.pending++; break;
+          case 'Failed': stats.failed++; break;
+          case 'Succeeded': stats.succeeded++; break;
+        }
+        
+        // NEW: Count readiness states
+        if (pod.readyContainers === pod.totalContainers && pod.totalContainers > 0) {
+          stats.fullyReady++;
+        } else if (pod.readyContainers > 0) {
+          stats.partiallyReady++;
+        } else {
+          stats.notReady++;
+        }
+      }
+
+      // Count recent creations
+      if (new Date(pod.firstSeen) > oneHourAgo) {
+        stats.recentlyCreated++;
+      }
+
+      // Count restart events
+      stats.restartEvents += pod.statusHistory.filter(h => h.event === 'restart').length;
+      
+      // NEW: Count readiness changes
+      stats.readinessChanges += pod.statusHistory.filter(h => h.event === 'readiness_change').length;
+    });
+
+    return stats;
+  }
+
+  // Clear old history (cleanup)
+  cleanupOldHistory(maxAgeDays = 30) {
+    const history = this.loadHistory();
+    const cutoffTime = new Date(Date.now() - (maxAgeDays * 24 * 60 * 60 * 1000));
+    
+    const initialCount = history.pods.length;
+    history.pods = history.pods.filter(pod => 
+      new Date(pod.lastSeen) > cutoffTime
+    );
+    
+    const removedCount = initialCount - history.pods.length;
+    
+    if (removedCount > 0) {
+      history.lastUpdated = new Date().toISOString();
+      this.saveHistory(history);
+      console.log(`🧹 Cleaned up ${removedCount} old pod records`);
+    }
+    
+    return removedCount;
+  }
+  
+  // NEW: Create initial snapshot from current pods
+  async createInitialSnapshot(pods) {
+    console.log(`📸 Creating initial snapshot of ${pods.length} pods...`);
+    
+    // Clear existing history for fresh start (optional)
+    // this.saveHistory({ pods: [], lastUpdated: new Date().toISOString() });
+    
+    // Process all pods as new
+    const changes = await this.updatePodLifecycle(pods);
+    
+    console.log(`✅ Initial snapshot created with ${changes.length} pods`);
+    return changes;
   }
 }
 
