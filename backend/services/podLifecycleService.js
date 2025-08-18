@@ -420,6 +420,18 @@ class PodLifecycleService {
     return stats;
   }
 
+  async createInitialSnapshot(pods) {
+    console.log(`📸 Creating initial snapshot of ${pods.length} pods...`);
+    
+    // Clear existing history for fresh start (optional)
+    // this.saveHistory({ pods: [], lastUpdated: new Date().toISOString() });
+    
+    // Process all pods as new
+    const changes = await this.updatePodLifecycle(pods);
+    
+    console.log(`✅ Initial snapshot created with ${changes.length} pods`);
+    return changes;
+  }
   // Clear old history (cleanup)
   cleanupOldHistory(maxAgeDays = 30) {
     const history = this.loadHistory();
