@@ -2279,7 +2279,7 @@ app.get('/api/kubernetes/snapshot/info', (req, res) => {
     }
     
     const currentPods = [];
-    const stats = podLifecycleService.getSnapshotStatistics(currentPods);
+    const stats = podLifecycleService.getPodStatistics(currentPods);
     
     res.json({
       success: true,
@@ -2363,7 +2363,7 @@ app.get('/api/kubernetes/pods/enhanced', async (req, res) => {
     }));
     
     // Get statistics
-    const stats = podLifecycleService.getSnapshotStatistics(currentPods);
+    const stats = podLifecycleService.getPodStatistics(currentPods);
     
     console.log(`✅ Enhanced pods response: ${filteredPods.length} pods (${stats.deletedPods} deleted since snapshot)`);
     
