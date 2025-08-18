@@ -2325,63 +2325,118 @@ app.get('/api/kubernetes/pods/enhanced', async (req, res) => {
     
     console.log(`🔍 Enhanced pods request: namespace=${namespace}, includeDeleted=${includeDeleted}`);
     
-    // Get current pods from Kubernetes
-    let currentPods = [];
+    // STEP 1: Get current pods from Kubernetes with full container details
+    let currentPodsMap = new Map();
     try {
+      let currentPods = [];
+      
       if (namespace === 'all') {
+        // Get all pods with container details
         currentPods = await kubernetesService.getAllPodsWithContainers();
       } else {
+        // Get pods for specific namespace with container details
         currentPods = await kubernetesService.getPods(namespace);
       }
+      
+      // Create a map for quick lookup
+      currentPods.forEach(pod => {
+        const key = `${pod.namespace}/${pod.name}`;
+        currentPodsMap.set(key, pod);
+      });
+      
+      console.log(`✅ Retrieved ${currentPods.length} current pods from Kubernetes`);
+      
+      // Update lifecycle tracking with current pods
+      await podLifecycleService.updatePodLifecycle(currentPods);
+      
     } catch (k8sError) {
       console.log('⚠️ Could not fetch current pods from K8s:', k8sError.message);
+      // Continue with lifecycle service data only
     }
     
-    // Get comprehensive pod list comparing with initial snapshot
-    const comprehensivePods = podLifecycleService.getComprehensivePodList(currentPods);
+    // STEP 2: Get comprehensive pod list including historical data
+    const comprehensivePods = podLifecycleService.getComprehensivePodList({
+      includeDeleted: includeDeleted === 'true',
+      namespace: namespace === 'all' ? null : namespace,
+      maxAge: maxAge ? parseInt(maxAge) : null,
+      sortBy
+    });
     
-    // Filter by namespace if needed
-    let filteredPods = comprehensivePods;
-    if (namespace !== 'all') {
-      filteredPods = comprehensivePods.filter(pod => pod.namespace === namespace);
-    }
+    // STEP 3: Merge current pod data with lifecycle data
+    const enrichedPods = comprehensivePods.map(lifecyclePod => {
+      const podKey = `${lifecyclePod.namespace}/${lifecyclePod.name}`;
+      const currentPod = currentPodsMap.get(podKey);
+      
+      if (currentPod && !lifecyclePod.isDeleted) {
+        // Pod exists in current cluster - use live data
+        return {
+          ...lifecyclePod,
+          // Override with current live data
+          status: currentPod.status,
+          ready: currentPod.ready,
+          restarts: currentPod.restarts || lifecyclePod.restarts,
+          node: currentPod.node || lifecyclePod.node,
+          // Container details from live data
+          containers: currentPod.containers || [],
+          readyContainers: currentPod.readyContainers || 0,
+          totalContainers: currentPod.totalContainers || 1,
+          readinessRatio: currentPod.readinessRatio || '0/1'
+        };
+      } else if (lifecyclePod.isDeleted) {
+        // Pod is deleted - use historical data
+        return {
+          ...lifecyclePod,
+          containers: [],
+          readyContainers: 0,
+          totalContainers: lifecyclePod.totalContainers || 1,
+          readinessRatio: '0/1' // Deleted pods always show as not ready
+        };
+      } else {
+        // Pod in history but not in current cluster (might be stale)
+        // Try to preserve last known container state
+        return {
+          ...lifecyclePod,
+          containers: lifecyclePod.containers || [],
+          readyContainers: lifecyclePod.readyContainers || 0,
+          totalContainers: lifecyclePod.totalContainers || 1,
+          readinessRatio: lifecyclePod.readinessRatio || '0/1'
+        };
+      }
+    });
     
-    // Filter deleted pods if requested
-    if (includeDeleted === 'false') {
-      filteredPods = filteredPods.filter(pod => !pod.isDeleted);
-    }
+    // STEP 4: Get statistics
+    const stats = podLifecycleService.getPodStatistics(namespace === 'all' ? null : namespace);
     
-    // Add calculated fields
-    filteredPods = filteredPods.map(pod => ({
-      ...pod,
-      age: pod.age || calculateAge(pod.snapshotTime || new Date()),
-      lifecycleStage: pod.isDeleted ? 'deleted' : 
-                     pod.isNew ? 'new' :
-                     pod.status === 'Running' ? 'stable' : 
-                     pod.status === 'Pending' ? 'starting' : 
-                     pod.status === 'Failed' ? 'failed' : 'unknown'
-    }));
+    // STEP 5: Track changes
+    const changes = [];
+    enrichedPods.forEach(pod => {
+      if (pod.statusHistory && pod.statusHistory.length > 0) {
+        const lastChange = pod.statusHistory[pod.statusHistory.length - 1];
+        const changeTime = new Date(lastChange.timestamp);
+        const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+        
+        if (changeTime > fiveMinutesAgo) {
+          changes.push({
+            type: lastChange.event,
+            pod: pod
+          });
+        }
+      }
+    });
     
-    // Get statistics
-    const stats = podLifecycleService.getPodStatistics(currentPods);
-    
-    console.log(`✅ Enhanced pods response: ${filteredPods.length} pods (${stats.deletedPods} deleted since snapshot)`);
+    console.log(`✅ Enhanced pods response: ${enrichedPods.length} pods with container details`);
+    console.log(`📊 Sample pod readiness:`, enrichedPods.slice(0, 3).map(p => ({
+      name: p.name,
+      ready: `${p.readyContainers}/${p.totalContainers}`,
+      status: p.status
+    })));
     
     res.json({
       success: true,
       data: {
-        pods: filteredPods,
-        statistics: {
-          total: filteredPods.length,
-          running: filteredPods.filter(p => !p.isDeleted && p.status === 'Running').length,
-          pending: filteredPods.filter(p => !p.isDeleted && p.status === 'Pending').length,
-          failed: filteredPods.filter(p => !p.isDeleted && p.status === 'Failed').length,
-          deleted: filteredPods.filter(p => p.isDeleted).length,
-          newSinceSnapshot: filteredPods.filter(p => p.createdAfterSnapshot).length,
-          deletedSinceSnapshot: filteredPods.filter(p => p.deletedSinceSnapshot).length,
-          snapshotTime: stats.snapshotTime
-        },
-        changes: [],
+        pods: enrichedPods,
+        statistics: stats,
+        changes: changes,
         timestamp: new Date()
       }
     });

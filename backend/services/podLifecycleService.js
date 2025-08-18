@@ -107,6 +107,13 @@ class PodLifecycleService {
         existingPod.lastSeen = now.toISOString();
         existingPod.isDeleted = false;  // Ensure it's not marked as deleted
         
+        // Update container readiness info
+        existingPod.ready = pod.ready || false;
+        existingPod.readyContainers = pod.readyContainers || 0;
+        existingPod.totalContainers = pod.totalContainers || 1;
+        existingPod.readinessRatio = pod.readinessRatio || '0/1';
+        existingPod.containers = pod.containers || [];
+        
         // Check for status change
         if (existingPod.status !== pod.status) {
           existingPod.statusHistory.push({
@@ -420,18 +427,6 @@ class PodLifecycleService {
     return stats;
   }
 
-  async createInitialSnapshot(pods) {
-    console.log(`📸 Creating initial snapshot of ${pods.length} pods...`);
-    
-    // Clear existing history for fresh start (optional)
-    // this.saveHistory({ pods: [], lastUpdated: new Date().toISOString() });
-    
-    // Process all pods as new
-    const changes = await this.updatePodLifecycle(pods);
-    
-    console.log(`✅ Initial snapshot created with ${changes.length} pods`);
-    return changes;
-  }
   // Clear old history (cleanup)
   cleanupOldHistory(maxAgeDays = 30) {
     const history = this.loadHistory();
