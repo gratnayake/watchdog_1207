@@ -1,5 +1,5 @@
-// backend/services/podLifecycleService.js
-// Enhanced service to track pod lifecycle events including ready state
+// backend/services/podLifecycleService.js - FIXED VERSION
+// Service to track pod lifecycle events with proper cleanup
 
 const fs = require('fs');
 const path = require('path');
@@ -53,7 +53,7 @@ class PodLifecycleService {
     }
   }
 
-  // Enhanced track pod lifecycle changes with ready state
+  // FIXED: Track pod lifecycle changes with proper cleanup
   async updatePodLifecycle(currentPods) {
     const now = new Date();
     const history = this.loadHistory();
@@ -66,36 +66,32 @@ class PodLifecycleService {
       currentPodMap.set(podKey, pod);
     });
 
-    // Check for new pods or status changes
+    // STEP 1: Update or add current pods
     currentPodMap.forEach((pod, podKey) => {
-      const existingPod = history.pods.find(p => 
-        p.namespace === pod.namespace && p.name === pod.name
+      // Find existing pod - but ONLY if it's not deleted
+      const existingPodIndex = history.pods.findIndex(p => 
+        p.namespace === pod.namespace && 
+        p.name === pod.name && 
+        !p.isDeleted  // Don't match deleted pods
       );
 
-      if (!existingPod) {
-        // New pod discovered with enhanced fields
+      if (existingPodIndex === -1) {
+        // New pod discovered
         const newPodEntry = {
           name: pod.name,
           namespace: pod.namespace,
           status: pod.status,
-          
-          // NEW: Add readiness tracking
-          readyContainers: pod.readyContainers || 0,
-          totalContainers: pod.totalContainers || 1,
-          readinessRatio: pod.readinessRatio || '0/1',
-          containers: pod.containers || [],
-          
           firstSeen: now.toISOString(),
           lastSeen: now.toISOString(),
           statusHistory: [{
             status: pod.status,
-            readiness: pod.readinessRatio || '0/1', // Track readiness in history
             timestamp: now.toISOString(),
             event: 'created'
           }],
           isDeleted: false,
           restarts: pod.restarts || 0,
-          node: pod.node || 'unknown'
+          node: pod.node || 'unknown',
+          deployment: this.extractDeploymentName(pod.name)  // Track deployment
         };
         
         history.pods.push(newPodEntry);
@@ -104,17 +100,17 @@ class PodLifecycleService {
           pod: newPodEntry
         });
         
-        console.log(`🆕 New pod discovered: ${podKey} (${newPodEntry.readinessRatio})`);
+        console.log(`🆕 New pod discovered: ${podKey}`);
       } else {
         // Update existing pod
+        const existingPod = history.pods[existingPodIndex];
         existingPod.lastSeen = now.toISOString();
-        existingPod.isDeleted = false;
+        existingPod.isDeleted = false;  // Ensure it's not marked as deleted
         
         // Check for status change
         if (existingPod.status !== pod.status) {
           existingPod.statusHistory.push({
             status: pod.status,
-            readiness: pod.readinessRatio || existingPod.readinessRatio,
             timestamp: now.toISOString(),
             event: 'status_change',
             previousStatus: existingPod.status
@@ -132,51 +128,15 @@ class PodLifecycleService {
           existingPod.status = pod.status;
         }
         
-        // NEW: Check for readiness change
-        const currentReadiness = pod.readinessRatio || '0/0';
-        const previousReadiness = existingPod.readinessRatio || '0/0';
-        
-        if (currentReadiness !== previousReadiness) {
-          existingPod.statusHistory.push({
-            status: pod.status,
-            readiness: currentReadiness,
-            timestamp: now.toISOString(),
-            event: 'readiness_change',
-            previousReadiness: previousReadiness
-          });
-          
-          console.log(`⚠️ Readiness change for ${podKey}: ${previousReadiness} → ${currentReadiness}`);
-          
-          changes.push({
-            type: 'readiness_change',
-            pod: existingPod,
-            oldReadiness: previousReadiness,
-            newReadiness: currentReadiness
-          });
-          
-          // Update the stored readiness values
-          existingPod.readinessRatio = currentReadiness;
-          existingPod.readyContainers = pod.readyContainers || 0;
-          existingPod.totalContainers = pod.totalContainers || 1;
-          existingPod.containers = pod.containers || [];
-        }
-        
         // Update restart count
         if (pod.restarts !== existingPod.restarts) {
           existingPod.statusHistory.push({
             status: pod.status,
-            readiness: pod.readinessRatio || existingPod.readinessRatio,
             timestamp: now.toISOString(),
             event: 'restart',
             restartCount: pod.restarts
           });
           existingPod.restarts = pod.restarts;
-          
-          changes.push({
-            type: 'restart',
-            pod: existingPod,
-            restartCount: pod.restarts
-          });
         }
         
         // Update node if changed
@@ -186,13 +146,19 @@ class PodLifecycleService {
       }
     });
 
-    // Check for deleted pods (pods that were there before but not now)
-    const deletionThreshold = 30000; // 30 seconds
-    history.pods.forEach(historicalPod => {
+    // STEP 2: Mark missing pods as deleted (with better logic)
+    const deletionThreshold = 60000; // 60 seconds (increased from 30)
+    
+    history.pods.forEach((historicalPod, index) => {
       const podKey = `${historicalPod.namespace}/${historicalPod.name}`;
       
-      if (!currentPodMap.has(podKey) && !historicalPod.isDeleted) {
-        // Pod is missing from current scan and not marked as deleted
+      // Skip if already marked as deleted
+      if (historicalPod.isDeleted) {
+        return;
+      }
+      
+      // Check if pod exists in current scan
+      if (!currentPodMap.has(podKey)) {
         const timeSinceLastSeen = now - new Date(historicalPod.lastSeen);
         
         if (timeSinceLastSeen > deletionThreshold) {
@@ -201,17 +167,77 @@ class PodLifecycleService {
           historicalPod.deletedAt = now.toISOString();
           historicalPod.statusHistory.push({
             status: 'Deleted',
-            readiness: '0/0',
             timestamp: now.toISOString(),
             event: 'deleted'
           });
           
-          console.log(`🗑️ Pod marked as deleted: ${podKey} (was ${historicalPod.readinessRatio})`);
+          console.log(`🗑️ Pod marked as deleted: ${podKey}`);
           
           changes.push({
             type: 'deleted',
             pod: historicalPod
           });
+        }
+      }
+    });
+
+    // STEP 3: Clean up very old deleted pods (keep for 24 hours then remove)
+    const cleanupThreshold = 24 * 60 * 60 * 1000; // 24 hours
+    history.pods = history.pods.filter(pod => {
+      if (pod.isDeleted && pod.deletedAt) {
+        const timeSinceDeleted = now - new Date(pod.deletedAt);
+        if (timeSinceDeleted > cleanupThreshold) {
+          console.log(`🧹 Removing old deleted pod from history: ${pod.namespace}/${pod.name}`);
+          return false; // Remove from history
+        }
+      }
+      return true; // Keep in history
+    });
+
+    // STEP 4: Remove duplicate pods (same deployment, different pod names)
+    // This handles the case where old pod shows alongside new pod
+    const deploymentPods = new Map();
+    
+    history.pods.forEach(pod => {
+      if (!pod.isDeleted) {
+        const deployment = this.extractDeploymentName(pod.name);
+        const key = `${pod.namespace}/${deployment}`;
+        
+        if (!deploymentPods.has(key)) {
+          deploymentPods.set(key, []);
+        }
+        deploymentPods.get(key).push(pod);
+      }
+    });
+    
+    // Keep only the most recent pod for each deployment
+    deploymentPods.forEach((pods, deploymentKey) => {
+      if (pods.length > 1) {
+        // Sort by lastSeen (newest first)
+        pods.sort((a, b) => new Date(b.lastSeen) - new Date(a.lastSeen));
+        
+        // Mark older pods as replaced (not just deleted)
+        for (let i = 1; i < pods.length; i++) {
+          const oldPod = pods[i];
+          if (!oldPod.isDeleted) {
+            oldPod.isDeleted = true;
+            oldPod.deletedAt = now.toISOString();
+            oldPod.replacedBy = pods[0].name;  // Track what replaced it
+            oldPod.statusHistory.push({
+              status: 'Replaced',
+              timestamp: now.toISOString(),
+              event: 'replaced',
+              replacedBy: pods[0].name
+            });
+            
+            console.log(`🔄 Pod ${oldPod.name} replaced by ${pods[0].name}`);
+            
+            changes.push({
+              type: 'replaced',
+              oldPod: oldPod,
+              newPod: pods[0]
+            });
+          }
         }
       }
     });
@@ -222,6 +248,18 @@ class PodLifecycleService {
     this.lastScan = now;
 
     return changes;
+  }
+
+  // Helper to extract deployment name from pod name
+  extractDeploymentName(podName) {
+    // Pattern: deployment-name-replicaset-hash-pod-hash
+    // Example: ifsapp-odata-7949dd6859-92vgh -> ifsapp-odata
+    const parts = podName.split('-');
+    if (parts.length >= 3) {
+      // Remove last 2 parts (replicaset hash + pod hash)
+      return parts.slice(0, -2).join('-');
+    }
+    return podName;
   }
 
   // Get comprehensive pod list including deleted ones
@@ -251,6 +289,27 @@ class PodLifecycleService {
     if (!includeDeleted) {
       pods = pods.filter(pod => !pod.isDeleted);
     }
+
+    // IMPORTANT: Group by deployment and show only latest pod per deployment
+    const deploymentGroups = new Map();
+    
+    pods.forEach(pod => {
+      const deployment = this.extractDeploymentName(pod.name);
+      const key = `${pod.namespace}/${deployment}`;
+      
+      if (!deploymentGroups.has(key)) {
+        deploymentGroups.set(key, pod);
+      } else {
+        // Keep the most recent pod (by lastSeen)
+        const existingPod = deploymentGroups.get(key);
+        if (new Date(pod.lastSeen) > new Date(existingPod.lastSeen)) {
+          deploymentGroups.set(key, pod);
+        }
+      }
+    });
+    
+    // Convert back to array
+    pods = Array.from(deploymentGroups.values());
 
     // Add computed fields
     pods = pods.map(pod => ({
@@ -311,7 +370,7 @@ class PodLifecycleService {
     return this.calculateAge(lastStatusChange.timestamp);
   }
 
-  // Enhanced statistics to include readiness
+  // Get pod statistics
   getPodStatistics(namespace = null) {
     const pods = this.getComprehensivePodList({ 
       namespace, 
@@ -326,13 +385,9 @@ class PodLifecycleService {
       failed: 0,
       succeeded: 0,
       deleted: 0,
-      fullyReady: 0,  // NEW: Pods with all containers ready
-      partiallyReady: 0,  // NEW: Pods with some containers ready
-      notReady: 0,  // NEW: Pods with no containers ready
       recentlyCreated: 0, // Last hour
       recentlyDeleted: 0, // Last hour
-      restartEvents: 0,
-      readinessChanges: 0  // NEW: Count of readiness changes
+      restartEvents: 0
     };
 
     const oneHourAgo = new Date(Date.now() - (60 * 60 * 1000));
@@ -351,15 +406,6 @@ class PodLifecycleService {
           case 'Failed': stats.failed++; break;
           case 'Succeeded': stats.succeeded++; break;
         }
-        
-        // NEW: Count readiness states
-        if (pod.readyContainers === pod.totalContainers && pod.totalContainers > 0) {
-          stats.fullyReady++;
-        } else if (pod.readyContainers > 0) {
-          stats.partiallyReady++;
-        } else {
-          stats.notReady++;
-        }
       }
 
       // Count recent creations
@@ -369,9 +415,6 @@ class PodLifecycleService {
 
       // Count restart events
       stats.restartEvents += pod.statusHistory.filter(h => h.event === 'restart').length;
-      
-      // NEW: Count readiness changes
-      stats.readinessChanges += pod.statusHistory.filter(h => h.event === 'readiness_change').length;
     });
 
     return stats;
@@ -396,80 +439,6 @@ class PodLifecycleService {
     }
     
     return removedCount;
-  }
-  
-  // NEW: Create initial snapshot from current pods
-  async createInitialSnapshot(pods) {
-    console.log(`📸 Creating initial snapshot of ${pods.length} pods...`);
-    
-    // Clear existing history for fresh start (optional)
-    // this.saveHistory({ pods: [], lastUpdated: new Date().toISOString() });
-    
-    // Process all pods as new
-    const changes = await this.updatePodLifecycle(pods);
-    
-    console.log(`✅ Initial snapshot created with ${changes.length} pods`);
-    return changes;
-  }
-
-  // NEW: Get snapshot statistics (missing method that server.js is calling)
-  getSnapshotStatistics() {
-    try {
-      const history = this.loadHistory();
-      const now = new Date();
-      
-      const stats = {
-        totalPods: history.pods ? history.pods.length : 0,
-        activePods: 0,
-        deletedPods: 0,
-        podsWithReadinessIssues: 0,
-        lastUpdated: history.lastUpdated || null,
-        snapshotAge: null
-      };
-
-      if (history.pods) {
-        // Count active vs deleted pods
-        stats.activePods = history.pods.filter(p => !p.isDeleted).length;
-        stats.deletedPods = history.pods.filter(p => p.isDeleted).length;
-        
-        // Count pods with readiness issues
-        stats.podsWithReadinessIssues = history.pods.filter(p => {
-          if (p.isDeleted) return false;
-          if (!p.readinessRatio) return false;
-          const [ready, total] = p.readinessRatio.split('/').map(Number);
-          return ready < total;
-        }).length;
-      }
-
-      // Calculate snapshot age
-      if (history.lastUpdated) {
-        const lastUpdate = new Date(history.lastUpdated);
-        const ageMs = now - lastUpdate;
-        const ageMinutes = Math.floor(ageMs / 60000);
-        const ageHours = Math.floor(ageMinutes / 60);
-        
-        if (ageHours > 0) {
-          stats.snapshotAge = `${ageHours}h ${ageMinutes % 60}m`;
-        } else {
-          stats.snapshotAge = `${ageMinutes}m`;
-        }
-      }
-
-      console.log(`📊 Snapshot statistics: ${stats.activePods} active, ${stats.deletedPods} deleted, ${stats.podsWithReadinessIssues} with issues`);
-      
-      return stats;
-    } catch (error) {
-      console.error('Failed to get snapshot statistics:', error);
-      return {
-        totalPods: 0,
-        activePods: 0,
-        deletedPods: 0,
-        podsWithReadinessIssues: 0,
-        lastUpdated: null,
-        snapshotAge: 'unknown',
-        error: error.message
-      };
-    }
   }
 }
 
