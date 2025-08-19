@@ -84,35 +84,33 @@ const EnhancedKubernetesMonitor = () => {
     };
   }, [autoRefresh, selectedNamespace, includeDeleted, sortBy]);
 
-  // FIXED: Function to group pods and create proper table structure
+  // FIXED: Function to group pods by deployment using Ant Design Table's expandable feature
   const groupPodsByDeployment = (podsList) => {
     const workloadMap = new Map();
     
+    console.log('🔍 Processing pods:', podsList.length);
+    console.log('🔍 Sample pod:', podsList[0]);
+    
     // Process all pods to group them
     podsList.forEach(pod => {
-      // Extract deployment + replicaset name (remove the last segment which is the pod identifier)
-      let groupName = pod.name;
+      // Extract deployment name (remove replicaset hash and pod identifier)
       let deploymentName = pod.name;
       
       // For pod names like: ifsapp-odata-7949dd6859-jcp7t
-      // groupName should be: ifsapp-odata-7949dd6859 (replicaset)
       // deploymentName should be: ifsapp-odata (deployment)
       if (pod.name.includes('-')) {
         const parts = pod.name.split('-');
         if (parts.length >= 3) {
-          // Remove last part (pod unique identifier)
-          groupName = parts.slice(0, -1).join('-');
           // Remove last two parts (replicaset hash and pod identifier) 
           deploymentName = parts.slice(0, -2).join('-');
         }
       }
       
-      const workloadKey = `${pod.namespace}/${groupName}`;
+      const workloadKey = `${pod.namespace}/${deploymentName}`;
       
       if (!workloadMap.has(workloadKey)) {
         workloadMap.set(workloadKey, {
           key: workloadKey,
-          replicaSet: groupName,
           deployment: deploymentName,
           namespace: pod.namespace,
           isGroup: true,
@@ -135,16 +133,18 @@ const EnhancedKubernetesMonitor = () => {
         workload.snapshotPodCount++;
       }
       
-      // Add current (non-deleted) pods
+      // Create child pod entry
+      const childPod = {
+        ...pod,
+        key: `${workloadKey}/${pod.name}`,
+        isChild: true,
+        parentGroup: deploymentName
+      };
+      
+      workload.children.push(childPod);
+      
+      // Only count non-deleted pods for current stats
       if (!pod.isDeleted) {
-        const childPod = {
-          ...pod,
-          key: `${workloadKey}/${pod.name}`,
-          isChild: true,
-          parentGroup: groupName
-        };
-        
-        workload.children.push(childPod);
         workload.currentCount++;
         
         // Parse ready status (e.g., "2/2" -> readyContainers=2, totalContainers=2)
@@ -171,17 +171,6 @@ const EnhancedKubernetesMonitor = () => {
         if (readyContainers === totalContainers && pod.status === 'Running') {
           workload.readyPods++;
         }
-      }
-      
-      // Also add deleted pods if they should be shown
-      if (pod.isDeleted && includeDeleted) {
-        const deletedPod = {
-          ...pod,
-          key: `${workloadKey}/${pod.name}`,
-          isChild: true,
-          parentGroup: groupName
-        };
-        workload.children.push(deletedPod);
       }
     });
     
@@ -214,24 +203,13 @@ const EnhancedKubernetesMonitor = () => {
     result.sort((a, b) => {
       const nsCompare = a.namespace.localeCompare(b.namespace);
       if (nsCompare !== 0) return nsCompare;
-      return a.replicaSet.localeCompare(b.replicaSet);
+      return a.deployment.localeCompare(b.deployment);
     });
     
-    // FIXED: Return flattened structure for Ant Design Table
-    const flattenedResult = [];
-    result.forEach(group => {
-      // Add the group header
-      flattenedResult.push(group);
-      
-      // Add all children if the group is expanded or if we want to show them by default
-      if (expandedGroups.includes(group.key) || group.children.length <= 5) {
-        group.children.forEach(child => {
-          flattenedResult.push(child);
-        });
-      }
-    });
+    console.log('📦 Final grouped result:', result);
+    console.log('📦 ifsapp-odata group:', result.find(g => g.deployment === 'ifsapp-odata'));
     
-    return flattenedResult;
+    return result;
   };
 
   const loadInitialData = async () => {
@@ -459,91 +437,52 @@ const EnhancedKubernetesMonitor = () => {
     return record.isGroup === true;
   };
 
-  // FIXED: Helper function to toggle group expansion
-  const toggleGroupExpansion = (record) => {
-    if (!isGroupHeader(record)) return;
-    
-    setExpandedGroups(prev => {
-      if (prev.includes(record.key)) {
-        return prev.filter(key => key !== record.key);
-      } else {
-        return [...prev, record.key];
-      }
-    });
-    
-    // Reload the pods to update the flattened structure
-    setTimeout(() => {
-      loadEnhancedPods();
-    }, 100);
-  };
-
   const enhancedColumns = [
     {
       title: 'Deployment/Pod',
       key: 'details',
       width: 400,
       render: (_, record) => {
-        // Group/ReplicaSet row
+        // Group/Deployment row
         if (record.isGroup) {
           const shouldHighlight = record.hasIssues;
-          const isExpanded = expandedGroups.includes(record.key);
           
           return (
-            <div 
-              style={{ cursor: 'pointer' }}
-              onClick={() => toggleGroupExpansion(record)}
-            >
-              <Space direction="vertical" size="small">
-                <div style={{ display: 'flex', alignItems: 'center' }}>
-                  <span style={{ marginRight: 8 }}>
-                    {isExpanded ? '📂' : '📁'}
-                  </span>
-                  <Text strong style={{ 
-                    fontSize: '14px',
-                    color: shouldHighlight ? '#ff4d4f' : 'inherit'
-                  }}>
-                    {record.deployment}
-                  </Text>
-                  {shouldHighlight && (
-                    <ExclamationCircleOutlined 
-                      style={{ color: '#ff4d4f', marginLeft: 8 }} 
-                      title={`Expected ${record.originalCount} pods, found ${record.currentCount}`}
-                    />
-                  )}
-                </div>
-                <Space>
-                  <Text type="secondary" style={{ fontSize: '11px' }}>
-                    ReplicaSet: {record.replicaSet}
-                  </Text>
-                  <Text type="secondary" style={{ fontSize: '11px' }}>
-                    | Namespace: {record.namespace}
-                  </Text>
-                  <Text type="secondary" style={{ fontSize: '11px' }}>
-                    | Pods: {record.children.length}
-                  </Text>
-                </Space>
+            <Space direction="vertical" size="small">
+              <div style={{ display: 'flex', alignItems: 'center' }}>
+                <Text strong style={{ 
+                  fontSize: '14px',
+                  color: shouldHighlight ? '#ff4d4f' : 'inherit'
+                }}>
+                  📦 {record.deployment}
+                </Text>
+                {shouldHighlight && (
+                  <ExclamationCircleOutlined 
+                    style={{ color: '#ff4d4f', marginLeft: 8 }} 
+                    title={`Expected ${record.originalCount} pods, found ${record.currentCount}`}
+                  />
+                )}
+              </div>
+              <Space>
+                <Text type="secondary" style={{ fontSize: '11px' }}>
+                  Namespace: {record.namespace}
+                </Text>
+                <Text type="secondary" style={{ fontSize: '11px' }}>
+                  | Pods: {record.children.length}
+                </Text>
               </Space>
-            </div>
+            </Space>
           );
         }
         
         // Individual pod row (child)
-        const podStyle = record.isChild ? { paddingLeft: '30px' } : {};
-        
         return (
-          <Space direction="vertical" size="small" style={podStyle}>
+          <Space direction="vertical" size="small">
             <div>
-              <Text strong style={{ 
-                fontSize: record.isChild ? '12px' : '13px'
-              }}>
-                {record.isChild ? '└─ ' : ''}{record.name}
+              <Text strong style={{ fontSize: '13px' }}>
+                {record.name}
               </Text>
             </div>
-            {!record.isGroup && !record.isChild && (
-              <Text type="secondary" style={{ fontSize: '11px' }}>
-                {record.namespace}
-              </Text>
-            )}
           </Space>
         );
       },
@@ -920,12 +859,18 @@ const EnhancedKubernetesMonitor = () => {
       </Card>
 
       {/* Enhanced Pod Table */}
-      <Card title={`Pod Lifecycle Monitor (${pods.filter(p => p.isGroup).length} deployments, ${pods.filter(p => !p.isGroup).length} pods)`}>
+      <Card title={`Pod Lifecycle Monitor (${pods.length} deployments)`}>
         <Table
           columns={enhancedColumns}
           dataSource={pods}
           rowKey="key"
           loading={loading}
+          expandable={{
+            childrenColumnName: 'children',
+            defaultExpandAllRows: false,
+            rowExpandable: record => record.isGroup && record.children && record.children.length > 0,
+            indentSize: 20,
+          }}
           pagination={{
             pageSize: 50,
             showSizeChanger: true,
@@ -937,7 +882,6 @@ const EnhancedKubernetesMonitor = () => {
             if (record.isGroup && record.hasIssues) return 'degraded-group-row';
             if (record.isGroup) return 'group-row';
             if (record.isDeleted) return 'deleted-pod-row';
-            if (record.isChild) return 'child-pod-row';
             return '';
           }}
           scroll={{ x: 1200 }}
