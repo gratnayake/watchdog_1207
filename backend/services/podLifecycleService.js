@@ -347,6 +347,7 @@ class PodLifecycleService {
     return pods;
   }*/
 
+  // Get comprehensive pod list including deleted ones
   getComprehensivePodList(options = {}) {
     const {
       includeDeleted = true,
@@ -374,9 +375,25 @@ class PodLifecycleService {
       pods = pods.filter(pod => !pod.isDeleted);
     }
 
-    // FIXED: DO NOT group by deployment here!
-    // Let the frontend handle grouping - backend should return ALL pods
-    // The original logic was incorrectly removing multiple pods from same deployment
+    // FIXED: Deduplicate by FULL POD NAME (not deployment name)
+    const uniquePods = new Map();
+    
+    pods.forEach(pod => {
+      const podKey = `${pod.namespace}/${pod.name}`; // Use FULL pod name as key
+      
+      if (!uniquePods.has(podKey)) {
+        uniquePods.set(podKey, pod);
+      } else {
+        // If duplicate found, keep the one with more recent lastSeen
+        const existingPod = uniquePods.get(podKey);
+        if (new Date(pod.lastSeen) > new Date(existingPod.lastSeen)) {
+          uniquePods.set(podKey, pod);
+        }
+      }
+    });
+    
+    // Convert back to array
+    pods = Array.from(uniquePods.values());
     
     // Add computed fields
     pods = pods.map(pod => ({
