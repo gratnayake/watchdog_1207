@@ -2314,7 +2314,7 @@ function calculateAge(timestamp) {
   return `${minutes}m`;
 }
 
-app.get('/api/kubernetes/pods/enhanced', async (req, res) => {
+/*app.get('/api/kubernetes/pods/enhanced', async (req, res) => {
   try {
     const { 
       namespace = 'default', 
@@ -2496,6 +2496,151 @@ app.get('/api/kubernetes/pods/enhanced', async (req, res) => {
     
   } catch (error) {
     console.error('❌ Enhanced pods error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});*/
+
+app.get('/api/kubernetes/pods/enhanced', async (req, res) => {
+  try {
+    const { 
+      namespace = 'default', 
+      includeDeleted = 'true',
+      maxAge,
+      sortBy = 'lastSeen'
+    } = req.query;
+    
+    console.log(`🔍 BACKEND: Enhanced pods request: namespace=${namespace}, includeDeleted=${includeDeleted}`);
+    
+    // STEP 1: Get current pods from Kubernetes with full container details
+    let currentPodsMap = new Map();
+    try {
+      let currentPods = [];
+      
+      if (namespace === 'all') {
+        // Get all pods with container details
+        currentPods = await kubernetesService.getAllPodsWithContainers();
+      } else {
+        // Get pods for specific namespace with container details
+        currentPods = await kubernetesService.getPods(namespace);
+      }
+      
+      // 🔍 DEBUG: Check what we got from Kubernetes
+      console.log(`🔍 BACKEND: Got ${currentPods.length} total pods from Kubernetes`);
+      const odataPods = currentPods.filter(p => p.name.includes('ifsapp-odata'));
+      console.log(`🔍 BACKEND: Found ${odataPods.length} ifsapp-odata pods from K8s:`, odataPods.map(p => ({
+        name: p.name,
+        status: p.status,
+        ready: p.ready,
+        readinessRatio: p.readinessRatio,
+        readyContainers: p.readyContainers,
+        totalContainers: p.totalContainers
+      })));
+      
+      // Create a map for quick lookup
+      currentPods.forEach(pod => {
+        const key = `${pod.namespace}/${pod.name}`;
+        currentPodsMap.set(key, pod);
+      });
+      
+      console.log(`✅ BACKEND: Retrieved ${currentPods.length} current pods from Kubernetes`);
+      
+      // Update lifecycle tracking with current pods
+      await podLifecycleService.updatePodLifecycle(currentPods);
+      
+    } catch (k8sError) {
+      console.log('⚠️ BACKEND: Could not fetch current pods from K8s:', k8sError.message);
+      // Continue with lifecycle service data only
+    }
+    
+    // STEP 2: Get comprehensive pod list including historical data
+    const comprehensivePods = podLifecycleService.getComprehensivePodList({
+      includeDeleted: includeDeleted === 'true',
+      namespace: namespace === 'all' ? null : namespace,
+      maxAge: maxAge ? parseInt(maxAge) : null,
+      sortBy
+    });
+    
+    // 🔍 DEBUG: Check what we got from lifecycle service
+    console.log(`🔍 BACKEND: Got ${comprehensivePods.length} pods from lifecycle service`);
+    const lifecycleOdataPods = comprehensivePods.filter(p => p.name.includes('ifsapp-odata'));
+    console.log(`🔍 BACKEND: Found ${lifecycleOdataPods.length} ifsapp-odata pods from lifecycle:`, lifecycleOdataPods.map(p => ({
+      name: p.name,
+      status: p.status,
+      isDeleted: p.isDeleted,
+      ready: p.ready,
+      readinessRatio: p.readinessRatio
+    })));
+    
+    // STEP 3: Merge current pod data with lifecycle data
+    const enrichedPods = comprehensivePods.map(lifecyclePod => {
+      const podKey = `${lifecyclePod.namespace}/${lifecyclePod.name}`;
+      const currentPod = currentPodsMap.get(podKey);
+      
+      if (currentPod && !lifecyclePod.isDeleted) {
+        // Pod exists in current cluster - use live data
+        return {
+          ...lifecyclePod,
+          // Override with current live data
+          status: currentPod.status,
+          ready: currentPod.ready,
+          restarts: currentPod.restarts || lifecyclePod.restarts,
+          node: currentPod.node || lifecyclePod.node,
+          // Container details from live data
+          containers: currentPod.containers || [],
+          readyContainers: currentPod.readyContainers || 0,
+          totalContainers: currentPod.totalContainers || 1,
+          readinessRatio: currentPod.readinessRatio || '0/1'
+        };
+      } else if (lifecyclePod.isDeleted) {
+        // Pod is deleted - use historical data
+        return {
+          ...lifecyclePod,
+          containers: [],
+          readyContainers: 0,
+          totalContainers: lifecyclePod.totalContainers || 1,
+          readinessRatio: '0/1' // Deleted pods always show as not ready
+        };
+      } else {
+        // Pod in history but not in current cluster (might be stale)
+        return {
+          ...lifecyclePod,
+          containers: lifecyclePod.containers || [],
+          readyContainers: lifecyclePod.readyContainers || 0,
+          totalContainers: lifecyclePod.totalContainers || 1,
+          readinessRatio: lifecyclePod.readinessRatio || '0/1'
+        };
+      }
+    });
+    
+    // 🔍 DEBUG: Check final result
+    console.log(`🔍 BACKEND: Final enriched pods count: ${enrichedPods.length}`);
+    const finalOdataPods = enrichedPods.filter(p => p.name.includes('ifsapp-odata'));
+    console.log(`🔍 BACKEND: Final ifsapp-odata pods: ${finalOdataPods.length}`, finalOdataPods.map(p => ({
+      name: p.name,
+      status: p.status,
+      isDeleted: p.isDeleted,
+      readinessRatio: p.readinessRatio
+    })));
+    
+    // ... rest of your existing code for statistics, changes, etc.
+    
+    res.json({
+      success: true,
+      data: {
+        pods: enrichedPods,
+        statistics: stats,
+        changes: changes,
+        timestamp: new Date(),
+        namespace: namespace,
+        totalPods: enrichedPods.length
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ BACKEND: Enhanced pods error:', error);
     res.status(500).json({
       success: false,
       error: error.message
