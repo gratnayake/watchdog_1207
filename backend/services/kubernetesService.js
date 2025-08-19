@@ -10,6 +10,10 @@ class KubernetesService {
     this.k8sApi = null;
     this.isConfigured = false;
     this.lastError = null;
+    this.lastKnownPodsFile = path.join(__dirname, '../data/last-known-pods.json');
+    this.ensureDataDirectory();
+    this.ensureLastKnownPodsFile();
+
     this.initializeKubernetesClient();
   }
 
@@ -97,6 +101,71 @@ class KubernetesService {
     this.initializeKubernetesClient();
   }
 
+  // Add these methods to the class
+
+ensureDataDirectory() {
+  const dataDir = path.join(__dirname, '../data');
+  if (!fs.existsSync(dataDir)) {
+    fs.mkdirSync(dataDir, { recursive: true });
+    console.log('📁 Created data directory');
+  }
+}
+
+ensureLastKnownPodsFile() {
+  if (!fs.existsSync(this.lastKnownPodsFile)) {
+    const defaultPodsData = {
+      pods: [],
+      lastUpdated: new Date().toISOString(),
+      initialized: false,
+      message: "Kubernetes not yet configured or no pods fetched"
+    };
+    
+    fs.writeFileSync(
+      this.lastKnownPodsFile, 
+      JSON.stringify(defaultPodsData, null, 2)
+    );
+    
+    console.log('☸️  Created last-known-pods.json file');
+  }
+}
+
+// Method to save current pods to the snapshot file
+saveLastKnownPods(pods) {
+  try {
+    const podsData = {
+      pods: pods,
+      lastUpdated: new Date().toISOString(),
+      initialized: true,
+      totalCount: pods.length
+    };
+    
+    fs.writeFileSync(
+      this.lastKnownPodsFile,
+      JSON.stringify(podsData, null, 2)
+    );
+    
+    console.log(`💾 Saved ${pods.length} pods to last-known-pods.json`);
+    return true;
+  } catch (error) {
+    console.error('Error saving last known pods:', error);
+    return false;
+  }
+}
+
+// Method to load the last known pods from file
+loadLastKnownPods() {
+  try {
+    if (!fs.existsSync(this.lastKnownPodsFile)) {
+      return { pods: [], initialized: false };
+    }
+    
+    const data = fs.readFileSync(this.lastKnownPodsFile, 'utf8');
+    return JSON.parse(data);
+  } catch (error) {
+    console.error('Error loading last known pods:', error);
+    return { pods: [], initialized: false };
+  }
+}
   async testConnection() {
     if (!this.isConfigured) {
       return {
@@ -189,6 +258,9 @@ class KubernetesService {
       }));
 
       console.log(`✅ Retrieved ${pods.length} pods from namespace: ${namespace}`);
+      this.saveLastKnownPods(pods);
+
+
       return pods;
 
     } catch (error) {
@@ -312,6 +384,7 @@ async getAllPodsWithContainers() {
       }));
 
       console.log(`✅ Retrieved ${pods.length} pods from all namespaces`);
+      this.saveLastKnownPods(pods);
       return pods;
 
     } catch (error) {
