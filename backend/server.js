@@ -2539,6 +2539,16 @@ app.get('/api/kubernetes/pods/enhanced', async (req, res) => {
         totalContainers: p.totalContainers
       })));
       
+      // 🔍 DEBUG: Check if there's any filtering by isPodReadyComplete
+      console.log(`🔍 BACKEND: All 37 pod names:`, currentPods.map(p => p.name));
+      
+      // Check if isPodReadyComplete function exists and is filtering
+      if (typeof isPodReadyComplete === 'function') {
+        console.log(`🔍 BACKEND: isPodReadyComplete function found - checking pod filtering`);
+        const filteredOdataPods = odataPods.filter(pod => isPodReadyComplete(pod));
+        console.log(`🔍 BACKEND: After isPodReadyComplete filter: ${filteredOdataPods.length} odata pods`, filteredOdataPods.map(p => p.name));
+      }
+      
       // Create a map for quick lookup
       currentPods.forEach(pod => {
         const key = `${pod.namespace}/${pod.name}`;
@@ -2612,6 +2622,26 @@ app.get('/api/kubernetes/pods/enhanced', async (req, res) => {
           totalContainers: lifecyclePod.totalContainers || 1,
           readinessRatio: lifecyclePod.readinessRatio || '0/1'
         };
+      }
+    });
+    
+    // STEP 4: Get statistics
+    const stats = podLifecycleService.getPodStatistics(namespace === 'all' ? null : namespace);
+    
+    // STEP 5: Track changes
+    const changes = [];
+    enrichedPods.forEach(pod => {
+      if (pod.statusHistory && pod.statusHistory.length > 0) {
+        const lastChange = pod.statusHistory[pod.statusHistory.length - 1];
+        const changeTime = new Date(lastChange.timestamp);
+        const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+        
+        if (changeTime > fiveMinutesAgo) {
+          changes.push({
+            type: lastChange.event,
+            pod: pod
+          });
+        }
       }
     });
     
