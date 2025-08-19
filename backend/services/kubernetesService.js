@@ -3,6 +3,7 @@
 const k8s = require('@kubernetes/client-node');
 const kubernetesConfigService = require('./kubernetesConfigService');
 const fs = require('fs');
+const path = require('path');
 
 class KubernetesService {
   constructor() {
