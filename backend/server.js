@@ -2355,15 +2355,66 @@ app.get('/api/kubernetes/pods/enhanced', async (req, res) => {
     }
     
     // STEP 2: Get comprehensive pod list including historical data
-    const comprehensivePods = podLifecycleService.getComprehensivePodList({
-      includeDeleted: includeDeleted === 'true',
-      namespace: namespace === 'all' ? null : namespace,
-      maxAge: maxAge ? parseInt(maxAge) : null,
-      sortBy
-    });
+    // FIXED: Pass the namespace parameter correctly
+    let comprehensivePods;
+    if (namespace === 'all') {
+      // For 'all' namespaces, call without namespace filter
+      comprehensivePods = podLifecycleService.getComprehensivePodList({
+        includeDeleted: includeDeleted === 'true',
+        namespace: null, // null means all namespaces
+        maxAge: maxAge ? parseInt(maxAge) : null,
+        sortBy
+      });
+    } else {
+      // For specific namespace, pass the namespace
+      comprehensivePods = podLifecycleService.getComprehensivePodList({
+        includeDeleted: includeDeleted === 'true',
+        namespace: namespace, // specific namespace
+        maxAge: maxAge ? parseInt(maxAge) : null,
+        sortBy
+      });
+    }
     
-    // STEP 3: Merge current pod data with lifecycle data
-    const enrichedPods = comprehensivePods.map(lifecyclePod => {
+    // STEP 3: Group pods by namespace when namespace='all'
+    let processedPods = comprehensivePods;
+    
+    if (namespace === 'all') {
+      // Group pods by namespace for better organization
+      const podsByNamespace = {};
+      
+      comprehensivePods.forEach(pod => {
+        const ns = pod.namespace || 'default';
+        if (!podsByNamespace[ns]) {
+          podsByNamespace[ns] = [];
+        }
+        podsByNamespace[ns].push(pod);
+      });
+      
+      // Sort namespaces alphabetically and flatten pods
+      const sortedNamespaces = Object.keys(podsByNamespace).sort();
+      processedPods = [];
+      
+      sortedNamespaces.forEach(ns => {
+        // Sort pods within each namespace
+        const namespacePods = podsByNamespace[ns].sort((a, b) => {
+          if (sortBy === 'lastSeen') {
+            return new Date(b.lastSeen) - new Date(a.lastSeen);
+          } else if (sortBy === 'name') {
+            return a.name.localeCompare(b.name);
+          } else if (sortBy === 'status') {
+            return a.status.localeCompare(b.status);
+          }
+          return 0;
+        });
+        
+        processedPods.push(...namespacePods);
+      });
+      
+      console.log(`📊 Grouped pods by namespace: ${sortedNamespaces.join(', ')}`);
+    }
+    
+    // STEP 4: Merge current pod data with lifecycle data
+    const enrichedPods = processedPods.map(lifecyclePod => {
       const podKey = `${lifecyclePod.namespace}/${lifecyclePod.name}`;
       const currentPod = currentPodsMap.get(podKey);
       
@@ -2393,7 +2444,6 @@ app.get('/api/kubernetes/pods/enhanced', async (req, res) => {
         };
       } else {
         // Pod in history but not in current cluster (might be stale)
-        // Try to preserve last known container state
         return {
           ...lifecyclePod,
           containers: lifecyclePod.containers || [],
@@ -2404,10 +2454,10 @@ app.get('/api/kubernetes/pods/enhanced', async (req, res) => {
       }
     });
     
-    // STEP 4: Get statistics
+    // STEP 5: Get statistics
     const stats = podLifecycleService.getPodStatistics(namespace === 'all' ? null : namespace);
     
-    // STEP 5: Track changes
+    // STEP 6: Track changes
     const changes = [];
     enrichedPods.forEach(pod => {
       if (pod.statusHistory && pod.statusHistory.length > 0) {
@@ -2427,6 +2477,7 @@ app.get('/api/kubernetes/pods/enhanced', async (req, res) => {
     console.log(`✅ Enhanced pods response: ${enrichedPods.length} pods with container details`);
     console.log(`📊 Sample pod readiness:`, enrichedPods.slice(0, 3).map(p => ({
       name: p.name,
+      namespace: p.namespace,
       ready: `${p.readyContainers}/${p.totalContainers}`,
       status: p.status
     })));
@@ -2437,7 +2488,9 @@ app.get('/api/kubernetes/pods/enhanced', async (req, res) => {
         pods: enrichedPods,
         statistics: stats,
         changes: changes,
-        timestamp: new Date()
+        timestamp: new Date(),
+        namespace: namespace,
+        totalPods: enrichedPods.length
       }
     });
     
