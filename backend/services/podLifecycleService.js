@@ -270,7 +270,7 @@ class PodLifecycleService {
   }
 
   // Get comprehensive pod list including deleted ones
-  getComprehensivePodList(options = {}) {
+  /*getComprehensivePodList(options = {}) {
     const {
       includeDeleted = true,
       namespace = null,
@@ -343,6 +343,71 @@ class PodLifecycleService {
           return new Date(b.lastSeen) - new Date(a.lastSeen);
       }
     });
+
+    return pods;
+  }*/
+
+  getComprehensivePodList(options = {}) {
+    const {
+      includeDeleted = true,
+      namespace = null,
+      maxAge = null, // in hours
+      sortBy = 'lastSeen'
+    } = options;
+
+    const history = this.loadHistory();
+    let pods = [...history.pods];
+
+    // Filter by namespace if specified
+    if (namespace && namespace !== 'all') {
+      pods = pods.filter(pod => pod.namespace === namespace);
+    }
+
+    // Filter by age if specified
+    if (maxAge) {
+      const cutoffTime = new Date(Date.now() - (maxAge * 60 * 60 * 1000));
+      pods = pods.filter(pod => new Date(pod.lastSeen) > cutoffTime);
+    }
+
+    // Filter deleted pods if not included
+    if (!includeDeleted) {
+      pods = pods.filter(pod => !pod.isDeleted);
+    }
+
+    // FIXED: DO NOT group by deployment here!
+    // Let the frontend handle grouping - backend should return ALL pods
+    // The original logic was incorrectly removing multiple pods from same deployment
+    
+    // Add computed fields
+    pods = pods.map(pod => ({
+      ...pod,
+      age: this.calculateAge(pod.firstSeen),
+      timeSinceLastSeen: this.calculateAge(pod.lastSeen),
+      lifecycleStage: this.getLifecycleStage(pod),
+      statusDuration: this.getStatusDuration(pod),
+      deployment: this.extractDeploymentName(pod.name) // Add deployment field for frontend grouping
+    }));
+
+    // Sort pods
+    pods.sort((a, b) => {
+      switch (sortBy) {
+        case 'name':
+          return a.name.localeCompare(b.name);
+        case 'namespace':
+          return a.namespace.localeCompare(b.namespace);
+        case 'status':
+          return a.status.localeCompare(b.status);
+        case 'firstSeen':
+          return new Date(b.firstSeen) - new Date(a.firstSeen);
+        case 'lastSeen':
+        default:
+          return new Date(b.lastSeen) - new Date(a.lastSeen);
+      }
+    });
+
+    console.log(`📋 getComprehensivePodList returning ${pods.length} pods`);
+    const odataPodsInResult = pods.filter(p => p.name.includes('ifsapp-odata'));
+    console.log(`📋 Including ${odataPodsInResult.length} ifsapp-odata pods:`, odataPodsInResult.map(p => p.name));
 
     return pods;
   }
