@@ -89,10 +89,14 @@ const EnhancedKubernetesMonitor = () => {
     const workloadMap = new Map();
     
     console.log('🔍 Processing pods:', podsList.length);
-    console.log('🔍 Sample pod:', podsList[0]);
+    if (podsList.length > 0) {
+      console.log('🔍 Sample pod structure:', podsList[0]);
+    }
     
     // Process all pods to group them
-    podsList.forEach(pod => {
+    podsList.forEach((pod, index) => {
+      console.log(`🔍 Processing pod ${index + 1}:`, pod.name, 'isDeleted:', pod.isDeleted);
+      
       // Extract deployment name (remove replicaset hash and pod identifier)
       let deploymentName = pod.name;
       
@@ -106,9 +110,12 @@ const EnhancedKubernetesMonitor = () => {
         }
       }
       
+      console.log(`🔍 Pod ${pod.name} -> Deployment: ${deploymentName}`);
+      
       const workloadKey = `${pod.namespace}/${deploymentName}`;
       
       if (!workloadMap.has(workloadKey)) {
+        console.log(`📦 Creating new group: ${workloadKey}`);
         workloadMap.set(workloadKey, {
           key: workloadKey,
           deployment: deploymentName,
@@ -133,7 +140,7 @@ const EnhancedKubernetesMonitor = () => {
         workload.snapshotPodCount++;
       }
       
-      // Create child pod entry
+      // Create child pod entry for ALL pods (deleted and non-deleted)
       const childPod = {
         ...pod,
         key: `${workloadKey}/${pod.name}`,
@@ -142,6 +149,7 @@ const EnhancedKubernetesMonitor = () => {
       };
       
       workload.children.push(childPod);
+      console.log(`📦 Added pod ${pod.name} to group ${workloadKey}. Group now has ${workload.children.length} children`);
       
       // Only count non-deleted pods for current stats
       if (!pod.isDeleted) {
@@ -176,7 +184,14 @@ const EnhancedKubernetesMonitor = () => {
     
     // Convert to array and calculate status
     const result = [];
-    workloadMap.forEach(workload => {
+    workloadMap.forEach((workload, key) => {
+      console.log(`📦 Processing group ${key}:`, {
+        deployment: workload.deployment,
+        childrenCount: workload.children.length,
+        currentCount: workload.currentCount,
+        children: workload.children.map(c => c.name)
+      });
+      
       // Set original count from snapshot or current count
       workload.originalCount = workload.snapshotPodCount || workload.currentCount;
       
@@ -196,6 +211,7 @@ const EnhancedKubernetesMonitor = () => {
         // Sort children pods by name
         workload.children.sort((a, b) => a.name.localeCompare(b.name));
         result.push(workload);
+        console.log(`📦 Added group ${workload.deployment} with ${workload.children.length} children to result`);
       }
     });
     
@@ -207,7 +223,16 @@ const EnhancedKubernetesMonitor = () => {
     });
     
     console.log('📦 Final grouped result:', result);
-    console.log('📦 ifsapp-odata group:', result.find(g => g.deployment === 'ifsapp-odata'));
+    const odataGroup = result.find(g => g.deployment === 'ifsapp-odata');
+    if (odataGroup) {
+      console.log('📦 ifsapp-odata group details:', {
+        deployment: odataGroup.deployment,
+        childrenCount: odataGroup.children.length,
+        children: odataGroup.children.map(c => ({ name: c.name, isDeleted: c.isDeleted }))
+      });
+    } else {
+      console.log('❌ ifsapp-odata group not found in result!');
+    }
     
     return result;
   };
@@ -233,13 +258,15 @@ const EnhancedKubernetesMonitor = () => {
       const data = await response.json();
       
       if (data.success) {
-        console.log('📊 Raw pod data:', data.data.pods);
+        console.log('📊 Raw API response:', data.data);
+        console.log('📊 Total pods from API:', data.data.pods.length);
+        console.log('📊 All pods:', data.data.pods);
         console.log('📊 Found ifsapp-odata pods:', data.data.pods.filter(p => p.name.includes('ifsapp-odata')));
         
         // Group pods by deployment
         const groupedPods = groupPodsByDeployment(data.data.pods);
-        console.log('📦 Grouped pods:', groupedPods);
-        console.log('📦 ifsapp-odata groups:', groupedPods.filter(p => p.deployment?.includes('ifsapp-odata') || p.name?.includes('ifsapp-odata')));
+        console.log('📦 Grouped pods result:', groupedPods);
+        console.log('📦 ifsapp-odata groups:', groupedPods.filter(p => p.deployment?.includes('ifsapp-odata')));
         
         setPods(groupedPods);
         
